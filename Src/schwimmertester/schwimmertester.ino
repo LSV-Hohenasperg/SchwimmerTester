@@ -183,7 +183,134 @@ uint16_t editButtonColors[15] = {RED, DARKGREY,GREEN,
                                  DARKGREY,DARKGREY,DARKGREY,
                                  PURPLE,DARKGREY,PURPLE,};
 
+/*=========================================================================================
+ * 
+ *                    F U N C T I O N S
+ * 
+ ==========================================================================================*/
 
+/*
+===============================================================================
+Function  : lowPass
+Synopsis  : float lowPass(float factor, float measure)
+Discussion: Filters measurements using a low pass filter. The smoothing
+            factor is adjustable between 0 and 1. I.e: if you set the factor
+            to 0.1, the old median will be used with 10% and the new reading
+            has a weight of 90% (very low smoothing). 
+Return    : New filtered measurement value (float)
+*/
+float lowPass(float factor, float measure)
+{
+    return (currentPressure*factor + measure) / (factor +1.0);
+}
+
+/*
+===============================================================================
+Function  : newMeasurement
+Synopsis  : void newValue(void)
+Discussion: This function is intended to be called by an interrupt. The
+            interrupt should be setup on ValueChange at the measurement pin.
+Return    : void
+*/
+
+void newMeasurement(void)
+{
+    float newMeasure = 1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250;
+    if (newMeasure > 1013)
+      newMeasure =1013;
+
+    //Critical in
+    currentPressure = lowPass(FILTERFACTOR,newMeasure);
+    //Critical out
+}
+
+/*
+===============================================================================
+Function  : tolerance
+Synopsis  : int tolerance(float measurement,float goal)
+Discussion: Determine weather the current measurement is in the acceptable
+            window
+Return    : positive - Masurement is too high
+            0        - Measurement is in tolerance window
+            negative - Measurement is too low
+*/
+int tolerance(float measurement, float goal)
+{
+    float delta;
+    
+    delta = measurement - goal;
+    
+    if  (abs(delta) <= TOLERANCE)
+    {
+        return 0; //Measurement tolerable
+    }
+
+    if (measurement < goal-TOLERANCE)
+    {
+        return -1; //Measurement too low
+    }
+    
+    return 1; //Measurement too high
+}
+
+/*
+===============================================================================
+Function  : climb
+Synopsis  : int climb(float goal)
+Discussion: Setup of all valves and relais to make the chamber climb
+Return    : 0 - climbing not needed
+            1 - climbing required
+*/
+int climb(float goal)
+{
+    if (tolerance(currentPressure,goal) != -1)
+    {
+        digitalWrite(PIN_PUMP,LOW);        //Switch on pump
+        digitalWrite(PIN_SUCCTION,LOW);    //Switch on sucction valve
+        digitalWrite(PIN_VENTILATION,LOW); //Switch on ventilation valve
+        return 1;
+    }
+    return 0;
+}
+
+/*
+===============================================================================
+Function  : descend
+Synopsis  : int descend(float goal)
+Discussion: Setup of all valves and relais to make the chamber descend
+Return    : 0 - Descending not needed
+            1 - Descend required
+*/
+int descend(float goal)
+{
+    if (tolerance(currentPressure,goal) != 1)
+    {
+        digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
+        digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
+        digitalWrite(PIN_VENTILATION,LOW);  //Switch on ventilation valve
+        return 1;
+    }
+    return 0;
+}
+
+/*
+===============================================================================
+Function  : level
+Synopsis  : void level(float pressure)
+Discussion: Maintain the current pressure level
+Return    : void
+*/
+void level(float pressure)
+{
+    if ( !climb(pressure) && !descend(pressure))
+    {
+        digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
+        digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
+        digitalWrite(PIN_VENTILATION,HIGH); //Switch off ventilation valve
+    }
+}
+
+ 
 void setup(void) {
   Serial.begin(9600);
   Serial.println(F("TFT LCD test"));
@@ -216,12 +343,7 @@ void setup(void) {
 
 ISR(TIMER0_COMPA_vect){    //This is the interrupt service routine for timer0
   //Measure the pressure
-  float pressureValue = 1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250;
-  if (pressureValue > 1013){
-    pressureValue =1013;
-  }
-
-  currentPressure=(currentPressure*FILTERFACTOR + pressureValue) / (FILTERFACTOR +1.0);
+  newMeasurement();
 }
 
 
