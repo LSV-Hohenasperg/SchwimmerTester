@@ -16,21 +16,28 @@
  *          INCLUDES
  *+++++++++++++++++++++++++++++
  */
+
+//Include TFT- and Touchscreen libraries
 #include <Adafruit_GFX.h>    // Core graphics library
 #include <Adafruit_TFTLCD.h> // Hardware-specific library
 #include <TouchScreen.h>
-#include <stdio.h>
-#include <math.h>
 #include <MCUFRIEND_kbv.h>
 
+//Include libc headers
+#include <stdio.h>
+#include <math.h>
 
+
+/*+++++++++++++++++++++++++++++
+ *          DEFINES 
+ *+++++++++++++++++++++++++++++
+ */
 #if defined(__SAM3X8E__)
     #undef __FlashStringHelper::F(string_literal)
     #define F(string_literal) string_literal
 #endif
 
-// Pinout For the Arduino Mega:
-
+// Pinout used for the TFT
 //  LCD_D2 connects to D2
 //  LCD_D3 connects to D3
 //  LCD_D4 connects to D4
@@ -46,19 +53,21 @@
 //  LCD_WR  connects to A1
 //  LCD_RD  connects to A0
 
-// connect +3,3V, +5V and GND as usual
 
-
+//Pinout used for the touch panel
 #define YP A2  // must be an analog pin, use "An" notation!
 #define XM A3  // must be an analog pin, use "An" notation!
 #define YM 8   // can be a digital pin
 #define XP 9   // can be a digital pin
 
-#define presSensPin A7
-#define intakeValvePin 10 //13=D10
-#define ventValvePin 11   //14=D11
-#define pumpPin 12   //15=D12
 
+//Pinout used for sensors and valves
+#define PIN_PRESSURE    A7
+#define PIN_SUCCTION    10   //13=D10
+#define PIN_VENTILATION 11   //14=D11
+#define PIN_PUMP        12   //15=D12
+
+//Parameters for the TouchScreen
 #define TS_MINX 75
 #define TS_MAXX 930
 #define TS_MINY 130
@@ -66,7 +75,6 @@
 #define MINPRESSURE 10
 #define MAXPRESSURE 1000
 
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 
 #define LCD_CS A3
 #define LCD_CD A2
@@ -99,7 +107,23 @@ TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 #define BUTTON_H 30
 #define BUTTON_TEXTSIZE 2
 
+//Output number with 4 digits right aligned to the screen
+#define NUMBER2SCREEN(n,x,y,s) { char numBuf[5];                                          \
+                                 sprintf(numBuf,"%04d",n);                                \
+                                 for (int i=0; i<=3 && numBuf[i]=='0';i++) numBuf[i]=' '; \
+                                 s.setCursor(x,y);                                        \
+                                 s.setTextColor(BLACK, WHITE); s.setTextSize(2);        \
+                                 s.print(numBuf);                                         \
+                               }
+
+
+/*+++++++++++++++++++++++++++++
+ *          GLOBALS 
+ *+++++++++++++++++++++++++++++
+ */
+
 MCUFRIEND_kbv tft;
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 
 volatile int32_t menuTimeSinceLastUpdate;
 volatile int32_t menuLastUpdate = 0;
@@ -122,6 +146,12 @@ volatile int32_t pressureValue = 0;
 volatile int32_t flightHeight = 0;
 volatile int32_t altitudeHeigthM = 0;
 volatile int32_t altitudeHeigthFT = 0;
+
+#define FILTERFACTOR 0.6 //Damp input values by 60% 
+#define TOLERANCE    10  //Accept measurements in a window of +- 10
+
+volatile float currentPressure = 1013; //Current pressure value
+
 
 
 // logo un Menu Page 1
@@ -163,16 +193,36 @@ void setup(void) {
   tft.setRotation(0);
   tft.fillScreen(BLACK);
   pinMode(13, OUTPUT);
-  pinMode(presSensPin, INPUT);
-  pinMode(intakeValvePin, OUTPUT);
-  pinMode(ventValvePin, OUTPUT);
-  pinMode(pumpPin, OUTPUT);
-  digitalWrite(intakeValvePin,HIGH);
-  digitalWrite(ventValvePin,HIGH);
-  digitalWrite(pumpPin,HIGH);
+  pinMode(PIN_PRESSURE, INPUT);
+  pinMode(PIN_SUCCTION, OUTPUT);
+  pinMode(PIN_VENTILATION, OUTPUT);
+  pinMode(PIN_PUMP, OUTPUT);
+  digitalWrite(PIN_SUCCTION,HIGH);
+  digitalWrite(PIN_VENTILATION,HIGH);
+  digitalWrite(PIN_PUMP,HIGH);
+
+  //Now setup timer0 to generate an interrupt every 16 ms
+  TCCR0B|=(1<<CS02);    //Set the prescaler to 1024
+  TCCR0B|=(1<<CS00);
+
+  
+  TCCR0A=(1<<WGM01);  //Set timer mode to Count and Clear (CTC)   
+  OCR0A=0xFF;         //The Formula for OCR is: OCR=16MHz/Prescaler*desiredSeconds -1
  
+  TIMSK0|=(1<<OCIE0A);   //Set the interrupt request
+  sei();                 //Enable interrupt
+
 }
 
+ISR(TIMER0_COMPA_vect){    //This is the interrupt service routine for timer0
+  //Measure the pressure
+  float pressureValue = 1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250;
+  if (pressureValue > 1013){
+    pressureValue =1013;
+  }
+
+  currentPressure=(currentPressure*FILTERFACTOR + pressureValue) / (FILTERFACTOR +1.0);
+}
 
 
 void loop()
@@ -306,11 +356,11 @@ void loop()
           if (b == 6) {
             if (stateIntakeValve == 0){
               stateIntakeValve = 1;
-              digitalWrite(intakeValvePin,LOW);
+              digitalWrite(PIN_SUCCTION,LOW);
               BTN_Main[b].drawButton(true);  // draw invert!
             } else {
               stateIntakeValve = 0;
-              digitalWrite(intakeValvePin,HIGH);
+              digitalWrite(PIN_SUCCTION,HIGH);
               BTN_Main[b].drawButton();  // draw invert! 
             }
           }
@@ -318,11 +368,11 @@ void loop()
           if (b == 7) {
             if (stateVentValve == 0){
               stateVentValve = 1;
-              digitalWrite(ventValvePin,LOW);
+              digitalWrite(PIN_VENTILATION,LOW);
               BTN_Main[b].drawButton(true);  // draw invert!
             } else {
               stateVentValve = 0;
-              digitalWrite(ventValvePin,HIGH);
+              digitalWrite(PIN_VENTILATION,HIGH);
               BTN_Main[b].drawButton();  // draw invert! 
             }
           }
@@ -330,11 +380,11 @@ void loop()
           if (b == 8) {
             if (statePump == 0){
               statePump = 1;
-              digitalWrite(pumpPin,LOW);
+              digitalWrite(PIN_PUMP,LOW);
               BTN_Main[b].drawButton(true);  // draw invert!
             } else {
               statePump = 0;
-              digitalWrite(pumpPin,HIGH);
+              digitalWrite(PIN_PUMP,HIGH);
               BTN_Main[b].drawButton();  // draw invert! 
             }
           }
@@ -352,76 +402,13 @@ void loop()
     lcdTimeSinceLastUpdate = lcdActualTime - lcdLastUpdate;
     if (lcdTimeSinceLastUpdate >= 500000){
       lcdLastUpdate = lcdActualTime;
-      
-      pressureValue = 1013-(analogRead(presSensPin)/204.8-0.21)*250;
-      if (pressureValue > 1013){
-        pressureValue =1013;
-      }
-      //Serial.println((1013-pressureValue));
-      tft.setCursor(200, 50);
-      tft.setTextColor(BLACK, WHITE); tft.setTextSize(2);
-      if (pressureValue >= 1000){
-        tft.print(pressureValue);
-      }
-      if (pressureValue >= 100 && pressureValue < 1000){
-        tft.print(" ");
-        tft.print(pressureValue);
-      }
-      if (pressureValue >= 10 && pressureValue < 100){
-        tft.print("  ");
-        tft.print(pressureValue);
-      }
-      if (pressureValue >= 0 && pressureValue < 10){
-        tft.print("   ");
-        tft.print(pressureValue);
-      }
+      NUMBER2SCREEN(currentPressure,200,50,tft);
     
-      altitudeHeigthM = (288.15/0.0065) * (1-pow((float) pressureValue / 1013,(1/5.255)));
-      tft.setCursor(188, 70);
-      tft.setTextColor(BLACK, WHITE); tft.setTextSize(2);
-      if (altitudeHeigthM >= 10000){
-        tft.print(altitudeHeigthM);
-      }
-      if (altitudeHeigthM >= 1000 && altitudeHeigthM < 10000){
-        tft.print(" ");
-        tft.print(altitudeHeigthM);
-      }
-      if (altitudeHeigthM >= 100 && altitudeHeigthM < 1000){
-        tft.print("  ");
-        tft.print(altitudeHeigthM);
-      }
-      if (altitudeHeigthM >= 10 && altitudeHeigthM < 100){
-        tft.print("   ");
-        tft.print(altitudeHeigthM);
-      }
-      if (altitudeHeigthM >= 0 && altitudeHeigthM < 10){
-        tft.print("    ");
-        tft.print(altitudeHeigthM);
-      }
-      
+      altitudeHeigthM = (288.15/0.0065) * (1-pow((float) currentPressure / 1013,(1/5.255)));
+      NUMBER2SCREEN(altitudeHeigthM,188,70,tft);
+
       altitudeHeigthFT = altitudeHeigthM*3.28084;
-      tft.setCursor(188, 90);
-      tft.setTextColor(BLACK, WHITE); tft.setTextSize(2);
-      if (altitudeHeigthFT >= 10000){
-        tft.print(altitudeHeigthFT);
-      }
-      if (altitudeHeigthFT >= 1000 && altitudeHeigthFT < 10000){
-        tft.print(" ");
-        tft.print(altitudeHeigthFT);
-      }
-      if (altitudeHeigthFT >= 100 && altitudeHeigthFT < 1000){
-        tft.print("  ");
-        tft.print(altitudeHeigthFT);
-      }
-      if (altitudeHeigthFT >= 10 && altitudeHeigthFT < 100){
-        tft.print("   ");
-        tft.print(altitudeHeigthFT);
-      }
-      if (altitudeHeigthFT >= 0 && altitudeHeigthFT < 10){
-        tft.print("    ");
-        tft.print(altitudeHeigthFT);
-      }
-  
+      NUMBER2SCREEN(altitudeHeigthFT,188,90,tft);
     }
   }
   
