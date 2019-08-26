@@ -8,6 +8,32 @@
  * Author(s)  : Thorsten Klinkhammer (klinkhammer@gmail.com)
  *              Markus Kuhnla (markus@kuhnla.de)
  * Date       : August, 24th 2019
+ * 
+ * 
+ * 
+ * List of functions:
+ *        lowPass()           - Smoothes values, read from the pressure sensor
+ *        newMeasurement()    - Reads a new value from the pressure sensor
+ *        tolerance()         - Checks if a value is in the tolerable interval
+ *        climb()             - Sets all digital outputs for a climb (reducing pressure)
+ *        descend()           - Sets all digital outputs for a descend (raising pressure)
+ *        level()             - Maintains a given pressure
+ *        readTouchScreen()   - Reads the touchscreen coordinates (user input)
+ *        drawMainScreen()    - Paints all elements for the main screen
+ *        drawEditScreen()    - Paints all elements for the edit screen (input of numbers)
+ *        processMainScreen() - Checks if user has touched s.th. and reacts accordingly
+ *        processEditScreen() - Checks if user has touched s.th. and reacts accordingly
+ *        setup()             - One time setup at program start
+ *        loop()              - Main program loop
+ *        
+ *        
+ * Hints for nosy people:
+ *    If you want to fiddle with the program, then make some changes
+ *    in the section, which is marked as "PLAYGROUND SECTION" (search for this string).
+ *    Changing values in this section should bring you some fun and should not
+ *    destroy the program logic.
+ *    
+ *    If you are a really experienced professional, then change everything you want :-)
  * ===========================================================================
  */
 
@@ -36,23 +62,6 @@
     #undef __FlashStringHelper::F(string_literal)
     #define F(string_literal) string_literal
 #endif
-
-// Pinout used for the TFT
-//  LCD_D2 connects to D2
-//  LCD_D3 connects to D3
-//  LCD_D4 connects to D4
-//  LCD_D5 connects to D4
-//  LCD_D6 connects to D6
-//  LCD_D7 connects to D7
-//  LCD_D0 connects to D8
-//  LCD_D1 connects to D9
-//  
-//  LCD_RST connects to A4
-//  LCD_CS  connects to A3
-//  LCD_RS  connects to A2
-//  LCD_WR  connects to A1
-//  LCD_RD  connects to A0
-
 
 //Pinout used for the touch panel
 #define YP A2  // must be an analog pin, use "An" notation!
@@ -103,18 +112,117 @@
 #define GREENYELLOW 0xAFE5      /* 173, 255,  47 */
 #define PINK        0xF81F
 
+#define BUTTON_X 40
+#define BUTTON_Y 90
 #define BUTTON_W 80
 #define BUTTON_H 30
+#define BUTTON_SV_X 40
+#define BUTTON_SV_Y 90
+#define BUTTON_SV_W 65
+#define BUTTON_SV_H 65
+#define BUTTON_SPACING_X 10
+#define BUTTON_SPACING_Y 8
 #define BUTTON_TEXTSIZE 2
 
-//Output number with 4 digits right aligned to the screen
-#define NUMBER2SCREEN(n,x,y,s) { char numBuf[5];                                          \
-                                 sprintf(numBuf,"%04d",n);                                \
-                                 for (int i=0; i<=3 && numBuf[i]=='0';i++) numBuf[i]=' '; \
-                                 s.setCursor(x,y);                                        \
-                                 s.setTextColor(BLACK, WHITE); s.setTextSize(2);        \
-                                 s.print(numBuf);                                         \
+// text box where numbers go
+#define TEXT_X 40
+#define TEXT_Y 44
+#define TEXT_W 235
+#define TEXT_H 40
+#define TEXT_TSIZE 3
+#define TEXT_TCOLOR BLACK
+
+// logo and Menu Page 1
+#define LOGO_X 0
+#define LOGO_Y 0
+#define LOGO_W 320
+#define LOGO_H 35
+#define LOGO_TSIZE 2
+
+//Buttons for Page1
+#define BTN_MAIN_GNDTIME     0
+#define BTN_MAIN_FLIGHTTIME  1
+#define BTN_MAIN_MAX_ALT     2
+#define BTN_MAIN_NO_CYCLE    3
+#define BTN_MAIN_START       4
+#define BTN_MAIN_STOP        5
+#define BTN_MAIN_SUCCTION    6
+#define BTN_MAIN_VENTILATION 7
+#define BTN_MAIN_PUMP        8
+
+
+
+//Output number with 4 digits right aligned to the screen.
+//  Unfortunately avrgcc uses a minimized libc version where
+//  length designators in format strings are not allowed to be
+//  variable. Because of this, we need to write a format string
+//  with a fixed length. i.e. %05d (Very ugly)
+#define NUMBER2SCREEN(n,x,y,s) { char numBuf[INPUT_LEN+1];                                       \
+                                 sprintf(numBuf,"%05d",n);                                       \
+                                 for (int i=0; i<INPUT_LEN && numBuf[i]=='0';i++) numBuf[i]=' '; \
+                                 s.setCursor(x,y);                                               \
+                                 s.setTextColor(BLACK, WHITE); s.setTextSize(2);                 \
+                                 s.print(numBuf);                                                \
                                }
+
+#define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) * (1-pow((float) pressure / 1013,(1/5.255))))
+#define CONVERT_METER2FEET(meters) (meters * 3.28084)
+
+/*
+ * PLAYGROUND SECTION
+ * 
+ * change everything you like
+ */
+
+//Initial values at program startup
+#define DEFAULT_TIME_GROUND 20;     //In seconds
+#define DEFAULT_TIME_FLIGHT 20;     //In seconds
+#define DEFAULT_SIM_ALTITUDE 10000; //In feet
+#define DEFAULT_NO_CYCLES 10;       //
+
+#define FILTERFACTOR            0.6 //Damp input values by 60% 
+#define TOLERANCE               10  //Accept measurements in a window of +- 10 mBar (270 ft)
+#define SCREEN_PROCESS_INTERVAL  5  //Interval to process inputs in milliseconds
+#define SCREEN_PAINT_INTERVAL   50  //Interval to update the screen in milliseconds
+
+#define INPUT_LEN 5                  //Length of data input field
+
+#define HEADLINE_TIME_GND    "Set: Time GND [sec] "
+#define HEADLINE_TIME_FLIGHT "Set: Time FLIGHT [sec] "
+#define HEADLINE_MAX_ALT     "Set: Max Altitude [ft] "
+#define HEADLINE_NO_CYCLES   "Set: No. of CYC [cyc] "
+
+
+Adafruit_GFX_Button BTN_Main[9];
+char mainButtonLabels[9][7] = {"20","20","3000","50",
+                            "Start","Stop",
+                            "Vlv1", "Vlv2", "Pump"};
+
+
+Adafruit_GFX_Button BTN_Edit[15];
+char editButtonLabels[15][6] = {"Back","Clear","OK",
+                                "1","2","3",
+                                "4","5","6",
+                                "7","8","9",
+                                "+","0","-"};
+
+uint16_t mainButtonColors[9] = {DARKGREY, DARKGREY,DARKGREY,DARKGREY,
+                            DARKGREEN, RED,
+                            DARKGREY, DARKGREY, DARKGREY};
+
+                            
+uint16_t editButtonColors[15] = {RED, DARKGREY,GREEN,
+                                 DARKGREY,DARKGREY,DARKGREY,
+                                 DARKGREY,DARKGREY,DARKGREY,
+                                 DARKGREY,DARKGREY,DARKGREY,
+                                 PURPLE,DARKGREY,PURPLE,};
+
+/*
+ * End of PLAYGROUND SECTION 
+ * 
+ * If you are not an experienced programmer, change 
+ * nothing beyond this point. You've be warned!!
+ */
 
 
 /*+++++++++++++++++++++++++++++
@@ -124,65 +232,36 @@
 
 MCUFRIEND_kbv tft;
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+char     *editScreenHeadline;      //Pointer to the headline for the editScreen. One of HEADLINE_xxx
+uint32_t editScreenInput  = 0;
+char     activeScreenPage = 1;
+uint8_t  stateCycle=0;           //Shows wheather we are doing cycles
+uint8_t  stateSucctionValve=0;    //Shows the current state of the sucction valve
+uint8_t  stateVentilationValve=0; //Shows the current state of the ventilation valve
+uint8_t  statePump=0;             //Shows the current state of the pump relais
 
-volatile int32_t menuTimeSinceLastUpdate;
-volatile int32_t menuLastUpdate = 0;
-volatile int32_t menuActualTime;
-volatile uint32_t lcdTimeSinceLastUpdate;
-volatile uint32_t lcdLastUpdate = 0;
-volatile uint32_t lcdActualTime;
+volatile int32_t touchXPos;      //X-coordinate of touch screen
+volatile int32_t touchYPos;      //Y-coordinate of touch screen
 
-volatile uint8_t drawMenuPage = 1;
-volatile uint8_t activeMenuPage = 1;
+//Calculated variables
+int32_t flightHeight     = 0;
+int32_t altitudeHeightM  = 0;
+int32_t altitudeHeightFT = 0;
 
-volatile uint8_t stateIntakeValve = 0;
-volatile uint8_t stateVentValve = 0;
-volatile uint8_t statePump = 0;
-
-volatile int32_t touchXPos = 1;
-volatile int32_t touchYPos = 1;
-
-volatile int32_t pressureValue = 0;
-volatile int32_t flightHeight = 0;
-volatile int32_t altitudeHeigthM = 0;
-volatile int32_t altitudeHeigthFT = 0;
-
-#define FILTERFACTOR 0.6 //Damp input values by 60% 
-#define TOLERANCE    10  //Accept measurements in a window of +- 10
-
-volatile float currentPressure = 1013; //Current pressure value
+//Variables for editable fields
+uint32_t timeGround  = DEFAULT_TIME_GROUND;
+uint32_t timeFlight  = DEFAULT_TIME_FLIGHT;
+uint32_t maxAltitude = DEFAULT_SIM_ALTITUDE;
+uint32_t noCycles    = DEFAULT_NO_CYCLES;
+uint32_t *editPtr;             //Pointer to one editable variable
+uint32_t currentCycle= 0;      //Counter for cycles
 
 
+float currentPressure = 1013; //Current pressure value
 
-// logo un Menu Page 1
-#define LOGO_X 0
-#define LOGO_Y 0
-#define LOGO_W 320
-#define LOGO_H 35
-#define LOGO_TSIZE 2
 
-Adafruit_GFX_Button BTN_Main[9];
-char mainButtonLabels[9][7] = {"20","20","3000","50",
-                            "Start","Stop",
-                            "Vlv1", "Vlv2", "Pump"};
+
                             
-uint16_t mainButtonColors[9] = {DARKGREY, DARKGREY,DARKGREY,DARKGREY,
-                            DARKGREEN, RED,
-                            DARKGREY, DARKGREY, DARKGREY};
-
-Adafruit_GFX_Button BTN_Edit[15];
-char editButtonLabels[15][6] = {"Back","Clear","OK",
-                                "1","2","3",
-                                "4","5","6",
-                                "7","8","9",
-                                "+","0","-"};
-                            
-uint16_t editButtonColors[15] = {RED, DARKGREY,GREEN,
-                                 DARKGREY,DARKGREY,DARKGREY,
-                                 DARKGREY,DARKGREY,DARKGREY,
-                                 DARKGREY,DARKGREY,DARKGREY,
-                                 PURPLE,DARKGREY,PURPLE,};
-
 /*=========================================================================================
  * 
  *                    F U N C T I O N S
@@ -215,13 +294,10 @@ Return    : void
 
 void newMeasurement(void)
 {
-    float newMeasure = 1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250;
-    if (newMeasure > 1013)
-      newMeasure =1013;
-
-    //Critical in
-    currentPressure = lowPass(FILTERFACTOR,newMeasure);
-    //Critical out
+  currentPressure = lowPass(FILTERFACTOR,max(1013,
+                                         1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250));
+  altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
+  altitudeHeightFT = CONVERT_METER2FEET(altitudeHeightM);
 }
 
 /*
@@ -236,21 +312,17 @@ Return    : positive - Masurement is too high
 */
 int tolerance(float measurement, float goal)
 {
-    float delta;
-    
-    delta = measurement - goal;
-    
-    if  (abs(delta) <= TOLERANCE)
-    {
-        return 0; //Measurement tolerable
-    }
+  float delta;
+  
+  delta = measurement - goal;
+  
+  if  (abs(delta) <= TOLERANCE)
+      return 0; //Measurement tolerable
 
-    if (measurement < goal-TOLERANCE)
-    {
-        return -1; //Measurement too low
-    }
-    
-    return 1; //Measurement too high
+  if (measurement < goal-TOLERANCE)
+      return -1; //Measurement too low
+  
+  return 1; //Measurement too high
 }
 
 /*
@@ -263,14 +335,13 @@ Return    : 0 - climbing not needed
 */
 int climb(float goal)
 {
-    if (tolerance(currentPressure,goal) != -1)
-    {
-        digitalWrite(PIN_PUMP,LOW);        //Switch on pump
-        digitalWrite(PIN_SUCCTION,LOW);    //Switch on sucction valve
-        digitalWrite(PIN_VENTILATION,LOW); //Switch on ventilation valve
-        return 1;
-    }
-    return 0;
+  if (tolerance(currentPressure,goal) != -1) {
+      digitalWrite(PIN_PUMP,LOW);        //Switch on pump
+      digitalWrite(PIN_SUCCTION,LOW);    //Switch on sucction valve
+      digitalWrite(PIN_VENTILATION,LOW); //Switch on ventilation valve
+      return 1;
+  }
+  return 0;
 }
 
 /*
@@ -283,14 +354,13 @@ Return    : 0 - Descending not needed
 */
 int descend(float goal)
 {
-    if (tolerance(currentPressure,goal) != 1)
-    {
-        digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
-        digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
-        digitalWrite(PIN_VENTILATION,LOW);  //Switch on ventilation valve
-        return 1;
-    }
-    return 0;
+  if (tolerance(currentPressure,goal) != 1) {
+      digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
+      digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
+      digitalWrite(PIN_VENTILATION,LOW);  //Switch on ventilation valve
+      return 1;
+  }
+  return 0;
 }
 
 /*
@@ -302,18 +372,326 @@ Return    : void
 */
 void level(float pressure)
 {
-    if ( !climb(pressure) && !descend(pressure))
-    {
-        digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
-        digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
-        digitalWrite(PIN_VENTILATION,HIGH); //Switch off ventilation valve
-    }
+  if ( !climb(pressure) && !descend(pressure)) {
+      digitalWrite(PIN_PUMP,HIGH);        //Switch off pump
+      digitalWrite(PIN_SUCCTION,HIGH);    //Switch off sucction valve
+      digitalWrite(PIN_VENTILATION,HIGH); //Switch off ventilation valve
+  }
 }
+
+
+/*
+===============================================================================
+Function  : readTouchScreen
+Synopsis  : void readTouchscreen(void)
+Discussion: Examine the coordinates where the touch screen has been pressed.
+            Store the results in the globals touchXpos and touchYpos. Set them to 0
+            if no touchScreen event can be detected.
+Return    : void
+*/
+void readTouchScreen(void) 
+{
+  touchYPos = 0;
+  touchXPos = 0;
+
+  TSPoint p = ts.getPoint();
+
+  pinMode(XM, OUTPUT);
+  pinMode(YP, OUTPUT);
+  
+  if (p.z > MINPRESSURE && p.z < MAXPRESSURE) {
+    // scale from 0->1023 to tft.width 
+   touchYPos = (tft.height() - map(p.x, TS_MINX, TS_MAXX, tft.height(), 0));
+   touchXPos = (tft.width()-map(p.y, TS_MAXY, TS_MINY, tft.width(), 0));
+  } 
+}
+
+/*
+===============================================================================
+Function  : drawMainScreen
+Synopsis  : void drawMainScreen(void)
+Discussion: Draw all elements to the main screen. Take care of some status variables
+            and draw elements disabled if required.
+Return    : void
+*/
+void drawMainScreen(void)
+{
+  
+  tft.fillScreen(WHITE);
+  tft.fillRect(LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LIGHTGREY);
+  tft.setCursor(LOGO_X + 35, LOGO_Y+10);
+  tft.setTextColor(BLACK);
+  tft.setTextSize(LOGO_TSIZE);
+  tft.print("Float Gauge Test Unit");
+  tft.setTextColor(BLACK); 
+  tft.setTextSize(2);
+  tft.setCursor(9, 50);
+  tft.print("Actual Pres.:        mbar");
+  tft.setCursor(9, 70);
+  tft.print("Comp. Alt.:          m");
+  tft.setCursor(9, 90);
+  tft.print("Comp. Alt.:          ft");
+  tft.setCursor(9, 110);
+  tft.print("Actual Cycle:        cyc");
+  tft.setCursor(9, 150);
+  tft.print("Time GND [sec]");
+  tft.setCursor(9, 200);
+  tft.print("Time FLIGHT [sec]"); 
+  tft.setCursor(9, 250);
+  tft.print("Max Altitude [ft]"); 
+  tft.setCursor(9, 300);
+  tft.print("No. of CYC [cyc]"); 
+  //Write all numerical values to the screen
+  NUMBER2SCREEN(currentPressure, 188,50, tft);
+  NUMBER2SCREEN(altitudeHeightM, 188,70, tft);
+  NUMBER2SCREEN(altitudeHeightFT,188,90, tft);
+  NUMBER2SCREEN(currentCycle,    188,110,tft);
+   
+  tft.fillRect(0, 445, 320, 35, NAVY);
+  tft.setCursor(LOGO_X + 30, 445+10);
+  tft.setTextColor(WHITE);
+  tft.setTextSize(LOGO_TSIZE);
+  tft.print("by LSV-Hohenasperg e.V.");
+  
+  // create buttons (clickable things)
+  BTN_Main[BTN_MAIN_GNDTIME].initButton(&tft, 275,155, BUTTON_W, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_GNDTIME], WHITE,
+                      mainButtonLabels[BTN_MAIN_GNDTIME], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_GNDTIME].drawButton();
+  NUMBER2SCREEN(timeGround, 277,155, tft);
+
+  BTN_Main[BTN_MAIN_FLIGHTTIME].initButton(&tft, 275,205, BUTTON_W, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_FLIGHTTIME], WHITE,
+                      mainButtonLabels[BTN_MAIN_FLIGHTTIME], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_FLIGHTTIME].drawButton();
+  NUMBER2SCREEN(timeFlight, 277,205, tft);
+  
+  BTN_Main[BTN_MAIN_MAX_ALT].initButton(&tft, 275,255, BUTTON_W, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_MAX_ALT], WHITE,
+                      mainButtonLabels[BTN_MAIN_MAX_ALT], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_MAX_ALT].drawButton();
+  NUMBER2SCREEN(maxAltitude, 277,255, tft);
+  
+  BTN_Main[BTN_MAIN_NO_CYCLE].initButton(&tft, 275,305, BUTTON_W, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_NO_CYCLE], WHITE,
+                      mainButtonLabels[BTN_MAIN_NO_CYCLE], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_NO_CYCLE].drawButton();
+  NUMBER2SCREEN(noCycles, 277,305, tft);
+ 
+  BTN_Main[BTN_MAIN_START].initButton(&tft, 85, 355, 130, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_START], WHITE,
+                      mainButtonLabels[BTN_MAIN_START], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_START].drawButton(stateCycle);
+  
+  BTN_Main[BTN_MAIN_STOP].initButton(&tft, 235,355, 130, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_STOP], WHITE,
+                      mainButtonLabels[BTN_MAIN_STOP], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_STOP].drawButton(!stateCycle);
+  
+  BTN_Main[BTN_MAIN_SUCCTION].initButton(&tft, 60,420, 80, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_SUCCTION], WHITE,
+                      mainButtonLabels[BTN_MAIN_SUCCTION], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_SUCCTION].drawButton(stateSucctionValve);
+
+  BTN_Main[BTN_MAIN_VENTILATION].initButton(&tft, 160, 420, 80, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_VENTILATION], WHITE,
+                      mainButtonLabels[BTN_MAIN_VENTILATION], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_VENTILATION].drawButton(stateVentilationValve);
+
+  BTN_Main[BTN_MAIN_PUMP].initButton(&tft, 260,420, 80, BUTTON_H, BLACK, 
+                      mainButtonColors[BTN_MAIN_PUMP], WHITE,
+                      mainButtonLabels[BTN_MAIN_PUMP], BUTTON_TEXTSIZE); 
+  BTN_Main[BTN_MAIN_PUMP].drawButton(statePump);
+
+
+  
+}
+
+/*
+===============================================================================
+Function  : drawEditScreen
+Synopsis  : void drawEditScreen(void)
+Discussion: Draw a number pad with buttons and a headline. 
+Return    : void
+*/
+void drawEditScreen(void)
+{
+  tft.fillScreen(WHITE);
+  tft.fillRect(LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LIGHTGREY);
+  tft.setCursor(LOGO_X + 9, LOGO_Y+10);
+  tft.setTextColor(BLACK);
+  tft.setTextSize(LOGO_TSIZE);
+
+  tft.print(editScreenHeadline);
+
+  // create buttons
+  for (uint8_t row=0; row<5; row++) {
+    for (uint8_t col=0; col<3; col++) {
+      BTN_Edit[col + row*3].initButton(&tft, BUTTON_SV_X+35+col*(BUTTON_SV_W+BUTTON_SPACING_X+10),
+                 BUTTON_SV_Y+40+row*(BUTTON_SV_H+BUTTON_SPACING_Y),    // x, y, w, h, outline, fill, text
+                  BUTTON_SV_W, BUTTON_SV_H, BLACK, editButtonColors[col+row*3], WHITE,
+                  editButtonLabels[col + row*3], BUTTON_TEXTSIZE);
+      BTN_Edit[col + row*3].drawButton();
+    }
+  }
+  // create 'text field'
+  tft.drawRect(TEXT_X, TEXT_Y, TEXT_W, TEXT_H, BLACK);
+
+  NUMBER2SCREEN(editScreenInput,TEXT_X+130,TEXT_Y+10,tft);
+}
+
+
+/*
+===============================================================================
+Function  : processMainScreen
+Synopsis  : void processMainScreen(void)
+Discussion: Process touch screen events on the main screen and set state variables 
+            accordingly.
+Return    : void
+*/
+void processMainScreen(void)
+{
+  uint8_t button=0;
+
+  readTouchScreen(); //Read touch screen coordinates
+  // go thru all the buttons, checking if they were pressed
+  for (button=0; button<9 ; button++)
+    if (BTN_Main[button].contains(touchXPos,touchYPos)) {
+      BTN_Main[button].press(true);
+      break;
+    }
+
+uint8_t stateCycle=0;
+  switch (button){
+    case BTN_MAIN_GNDTIME:
+              if (!stateCycle) {
+                editScreenHeadline=HEADLINE_TIME_GND;
+                editPtr=&timeGround;
+                activeScreenPage = 2;
+              }
+              break;
+              
+    case BTN_MAIN_FLIGHTTIME:
+              if (!stateCycle) {
+                editScreenHeadline=HEADLINE_TIME_FLIGHT;
+                editPtr=&timeFlight;
+                activeScreenPage = 2;
+              }
+              break;
+              
+    case BTN_MAIN_MAX_ALT:
+              if (!stateCycle) {
+                editScreenHeadline=HEADLINE_MAX_ALT;
+                editPtr=&maxAltitude;
+                activeScreenPage = 2;
+              }
+              break;
+              
+    case BTN_MAIN_NO_CYCLE:
+              if (!stateCycle) {
+                editScreenHeadline=HEADLINE_NO_CYCLES;
+                editPtr=&noCycles;
+                activeScreenPage = 2;
+              }
+              break;
+
+    case BTN_MAIN_START:
+              stateCycle=1;
+              break;
+              
+    case BTN_MAIN_STOP:
+              stateCycle=0;
+              break;
+              
+    case BTN_MAIN_SUCCTION:
+              if (!stateCycle) {
+                stateSucctionValve=1-stateSucctionValve;
+                digitalWrite(PIN_SUCCTION,!stateSucctionValve);
+              }
+              break;
+              
+    case BTN_MAIN_VENTILATION:
+              if (!stateCycle) {
+                stateVentilationValve=1-stateVentilationValve;
+                digitalWrite(PIN_VENTILATION,!stateVentilationValve);
+              }
+              break;
+              
+    case BTN_MAIN_PUMP:
+              if (!stateCycle) {
+                statePump=1-statePump;
+                digitalWrite(PIN_PUMP,!statePump);
+              }
+              break;
+  }
+}
+
+/*
+===============================================================================
+Function  : processEditScreen
+Synopsis  : void processMainScreen(void)
+Discussion: Process touch screen events on the main screen and set state variables 
+            accordingly.
+Return    : void
+*/
+void processEditScreen(void)
+{
+  uint8_t b=0;
+  
+  readTouchScreen(); //Read touch screen coordinates
+
+  // go thru all the buttons, checking if they were pressed
+  for (uint8_t b=0; b<15; b++) {
+    if (BTN_Edit[b].contains(touchXPos,touchYPos)) {
+      BTN_Edit[b].press(true);  // tell the button it is pressed
+      break;
+    }
+  }
+
+  for (b=0; b<15; b++) {
+    if (BTN_Edit[b].justPressed())
+      switch(b){
+        case 0: //Back
+          activeScreenPage = 1; //Back to the main screen
+          break;
+
+        case 1: //Clear
+          editScreenInput=0;
+          break;
+          
+        case 2: //OK
+          *editPtr=editScreenInput;
+          activeScreenPage = 1; //Back to main screen
+          break;
+        
+        case 12://+
+          editScreenInput++;
+          break;
+        
+        case 13: //0
+          editScreenInput=0;
+          break;
+        
+        case 14: //-
+          editScreenInput--;
+          break;
+        
+        default: //Other digit
+          editScreenInput=editScreenInput*10+(b-2); //Sorry for this hack
+          break;
+      }
+  }
+  
+}
+/*=========================================================================================
+ * 
+ *                             S E T U P
+ * 
+ ==========================================================================================*/
 
  
 void setup(void) {
   Serial.begin(9600);
-  Serial.println(F("TFT LCD test"));
 
   tft.reset();
   tft.begin(tft.readID());
@@ -328,212 +706,68 @@ void setup(void) {
   digitalWrite(PIN_VENTILATION,HIGH);
   digitalWrite(PIN_PUMP,HIGH);
 
-  //Now setup timer0 to generate an interrupt every 16 ms
-  TCCR0B|=(1<<CS02);    //Set the prescaler to 1024
-  TCCR0B|=(1<<CS00);
-
-  
-  TCCR0A=(1<<WGM01);  //Set timer mode to Count and Clear (CTC)   
-  OCR0A=0xFF;         //The Formula for OCR is: OCR=16MHz/Prescaler*desiredSeconds -1
- 
-  TIMSK0|=(1<<OCIE0A);   //Set the interrupt request
-  sei();                 //Enable interrupt
+  //Now setup timer0 to generate an interrupt every 1 ms
+  TCCR0B|=(1<<CS01);    //Set the prescaler to 8
+  TCCR0A=(1<<WGM01);    //Set timer mode to Clear Timer on Compare Match (CTC)   
+  OCR0A=0x7C;           //The Formula for OCR is: OCR=16MHz/Prescaler*desiredSeconds -1
+  TIMSK0|=(1<<OCIE0A);  //Set the interrupt request
+  sei();                //Enable interrupt
 
 }
+
+/*=========================================================================================
+ * 
+ *                             I N T E R R U P T S
+ * 
+ ==========================================================================================*/
+
+volatile unsigned int millies=0; //Used to count the timer interrupts
+#define MEASUREMENT_INTERVAL 100 //Pressure measurement every 100 ms
 
 ISR(TIMER0_COMPA_vect){    //This is the interrupt service routine for timer0
-  //Measure the pressure
-  newMeasurement();
+  //Measure the pressure every N milliseconds
+  millies++;
 }
 
+/*=========================================================================================
+ * 
+ *                             M A I N L O O P
+ * 
+ ==========================================================================================*/
 
 void loop()
 {
-  touchYPos = 0;
-  touchXPos = 0;
-  menuActualTime = micros();
-  menuTimeSinceLastUpdate = menuActualTime - menuLastUpdate;
-  if (menuTimeSinceLastUpdate >= 5000){
-    menuLastUpdate = menuActualTime;
-    
-    TSPoint p = ts.getPoint();
 
-    pinMode(XM, OUTPUT);
-    pinMode(YP, OUTPUT);
-    
-    if (p.z > MINPRESSURE && p.z < MAXPRESSURE) {
-      // scale from 0->1023 to tft.width 
-     touchYPos = (tft.height() - map(p.x, TS_MINX, TS_MAXX, tft.height(), 0));
-     touchXPos = (tft.width()-map(p.y, TS_MAXY, TS_MINY, tft.width(), 0));
-    }
-    
-    if (activeMenuPage == 1){
-      if (drawMenuPage == 1){
-        drawMenuPage = 0;
-        tft.fillScreen(WHITE);
-        tft.fillRect(LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LIGHTGREY);
-        tft.setCursor(LOGO_X + 35, LOGO_Y+10);
-        tft.setTextColor(BLACK);
-        tft.setTextSize(LOGO_TSIZE);
-        tft.print("Float Gauge Test Unit");
+  //Pressure measurement every MEASUREMENT_INTERVAL ms
+  if (millies%MEASUREMENT_INTERVAL == 0)
+    newMeasurement(); //It's time for a new measurement
 
-        tft.setTextColor(BLACK); 
-        tft.setTextSize(2);
-        tft.setCursor(9, 50);
-        tft.print("Actual Pres.:        mbar");
-        tft.setCursor(9, 70);
-        tft.print("Comp. Alt.:          m");
-        tft.setCursor(9, 90);
-        tft.print("Comp. Alt.:          ft");
-        tft.setCursor(9, 110);
-        tft.print("Actual Cycle:        cyc");
-        tft.setCursor(9, 150);
-        tft.print("Time GND [sec]");
-        tft.setCursor(9, 200);
-        tft.print("Time FLIGHT [sec]"); 
-        tft.setCursor(9, 250);
-        tft.print("Max Altitude [ft]"); 
-        tft.setCursor(9, 300);
-        tft.print("No. of CYC [cyc]"); 
-           
-        tft.fillRect(0, 445, 320, 35, NAVY);
-        tft.setCursor(LOGO_X + 30, 445+10);
-        tft.setTextColor(WHITE);
-        tft.setTextSize(LOGO_TSIZE);
-        tft.print("by LSV-Hohenasperg e.V.");
-
-        // create buttons
-        BTN_Main[0].initButton(&tft, 275,155, BUTTON_W, BUTTON_H, BLACK, 
-                              mainButtonColors[0], WHITE,
-                              mainButtonLabels[0], BUTTON_TEXTSIZE); 
-        BTN_Main[0].drawButton();
-        BTN_Main[1].initButton(&tft, 275,205, BUTTON_W, BUTTON_H, BLACK, 
-                              mainButtonColors[1], WHITE,
-                              mainButtonLabels[1], BUTTON_TEXTSIZE); 
-        BTN_Main[1].drawButton();
-        BTN_Main[2].initButton(&tft, 275,255, BUTTON_W, BUTTON_H, BLACK, 
-                              mainButtonColors[2], WHITE,
-                              mainButtonLabels[2], BUTTON_TEXTSIZE); 
-        BTN_Main[2].drawButton();
-        BTN_Main[3].initButton(&tft, 275,305, BUTTON_W, BUTTON_H, BLACK, 
-                              mainButtonColors[3], WHITE,
-                              mainButtonLabels[3], BUTTON_TEXTSIZE); 
-        BTN_Main[3].drawButton();
-        
-        BTN_Main[4].initButton(&tft, 85, 355, 130, BUTTON_H, BLACK, 
-                              mainButtonColors[4], WHITE,
-                              mainButtonLabels[4], BUTTON_TEXTSIZE); 
-        BTN_Main[4].drawButton();
-        BTN_Main[5].initButton(&tft, 235,355, 130, BUTTON_H, BLACK, 
-                              mainButtonColors[5], WHITE,
-                              mainButtonLabels[5], BUTTON_TEXTSIZE); 
-        BTN_Main[5].drawButton();
-        
-        BTN_Main[6].initButton(&tft, 60,420, 80, BUTTON_H, BLACK, 
-                              mainButtonColors[6], WHITE,
-                              mainButtonLabels[6], BUTTON_TEXTSIZE); 
-        BTN_Main[6].drawButton();
-        
-        BTN_Main[7].initButton(&tft, 160, 420, 80, BUTTON_H, BLACK, 
-                              mainButtonColors[7], WHITE,
-                              mainButtonLabels[7], BUTTON_TEXTSIZE); 
-        BTN_Main[7].drawButton();
-        BTN_Main[8].initButton(&tft, 260,420, 80, BUTTON_H, BLACK, 
-                              mainButtonColors[8], WHITE,
-                              mainButtonLabels[8], BUTTON_TEXTSIZE); 
-        BTN_Main[8].drawButton();
-
-      } // end: drawMenuPage == 1
-      
-      // go thru all the buttons, checking if they were pressed
-      for (uint8_t b=0; b<9; b++) {
-        if (BTN_Main[b].contains(touchXPos,touchYPos)) {
-          //Serial.print("Pressing: "); Serial.println(b);
-          BTN_Main[b].press(true);  // tell the button it is pressed
-          menuLastUpdate = menuLastUpdate+300000;
+  if (!millies%SCREEN_PAINT_INTERVAL)
+    switch(activeScreenPage) {
+      case 1:
+          drawMainScreen();
           break;
-        } else {
-        BTN_Main[b].press(false);  // tell the button it is NOT pressed
-        }
-        /*
-        if (BTN_Main[b].justReleased()) {
-          Serial.print("Released: "); Serial.println(b);
-          BTN_Main[b].drawButton();  // draw normal
-          }
-        */
-      }
-
-      // now we can ask the buttons if their state has changed
-      for (uint8_t b=0; b<9; b++) {
-        if (BTN_Main[b].justPressed()) {
-          
-          if (b == 4) {
-            Serial.print("Start");
-          }
-          
-          if (b == 5) {
-            Serial.print("Stop");
-          }
-          
-          if (b == 6) {
-            if (stateIntakeValve == 0){
-              stateIntakeValve = 1;
-              digitalWrite(PIN_SUCCTION,LOW);
-              BTN_Main[b].drawButton(true);  // draw invert!
-            } else {
-              stateIntakeValve = 0;
-              digitalWrite(PIN_SUCCTION,HIGH);
-              BTN_Main[b].drawButton();  // draw invert! 
-            }
-          }
-          
-          if (b == 7) {
-            if (stateVentValve == 0){
-              stateVentValve = 1;
-              digitalWrite(PIN_VENTILATION,LOW);
-              BTN_Main[b].drawButton(true);  // draw invert!
-            } else {
-              stateVentValve = 0;
-              digitalWrite(PIN_VENTILATION,HIGH);
-              BTN_Main[b].drawButton();  // draw invert! 
-            }
-          }
-          
-          if (b == 8) {
-            if (statePump == 0){
-              statePump = 1;
-              digitalWrite(PIN_PUMP,LOW);
-              BTN_Main[b].drawButton(true);  // draw invert!
-            } else {
-              statePump = 0;
-              digitalWrite(PIN_PUMP,HIGH);
-              BTN_Main[b].drawButton();  // draw invert! 
-            }
-          }
-
-        }
-      }
-              
-    } // end: activeMenuPage == 1
-  } // end: menuTimeSinceLastUpdate >= 5000
-
-  
-    /*---------------------update measured values on menu page -------------------------------*/
-  if (activeMenuPage == 1){
-    lcdActualTime = micros();
-    lcdTimeSinceLastUpdate = lcdActualTime - lcdLastUpdate;
-    if (lcdTimeSinceLastUpdate >= 500000){
-      lcdLastUpdate = lcdActualTime;
-      NUMBER2SCREEN(currentPressure,200,50,tft);
-    
-      altitudeHeigthM = (288.15/0.0065) * (1-pow((float) currentPressure / 1013,(1/5.255)));
-      NUMBER2SCREEN(altitudeHeigthM,188,70,tft);
-
-      altitudeHeigthFT = altitudeHeigthM*3.28084;
-      NUMBER2SCREEN(altitudeHeigthFT,188,90,tft);
+      case 2:
+          drawEditScreen();
+          break;
+      default:
+          //Huuuuh this is crazy!
+          break;
     }
-  }
-  
+
+  if (!millies%SCREEN_PROCESS_INTERVAL)
+    switch(activeScreenPage) {
+      case 1:
+          processMainScreen();
+          break;
+      case 2:
+          processEditScreen();
+          break;
+      default:
+          //Huuuuh this is crazy!
+          break;
+    }
+
  
 
 }
