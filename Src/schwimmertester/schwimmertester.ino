@@ -19,10 +19,13 @@
  *        descend()           - Sets all digital outputs for a descend (raising pressure)
  *        level()             - Maintains a given pressure
  *        readTouchScreen()   - Reads the touchscreen coordinates (user input)
+ *        updateMainScreen()  - Update dynamic elements on main screen
  *        drawMainScreen()    - Paints all elements for the main screen
+ *        updateEditScreen()  - Update dynamic elements on the number pad screen.
  *        drawEditScreen()    - Paints all elements for the edit screen (input of numbers)
  *        processMainScreen() - Checks if user has touched s.th. and reacts accordingly
  *        processEditScreen() - Checks if user has touched s.th. and reacts accordingly
+ *        processCycles()     - run the climb & descent cycles as often as needed
  *        setup()             - One time setup at program start
  *        loop()              - Main program loop
  *        
@@ -33,7 +36,7 @@
  *    Changing values in this section should bring you some fun and should not
  *    destroy the program logic.
  *    
- *    If you are a really experienced professional, then change everything you want :-)
+ *    If you are a really experienced professional, change everything you want :-)
  * ===========================================================================
  */
 
@@ -58,38 +61,120 @@
  *          DEFINES 
  *+++++++++++++++++++++++++++++
  */
+//Ask Thorsten what this is! 
 #if defined(__SAM3X8E__)
     #undef __FlashStringHelper::F(string_literal)
     #define F(string_literal) string_literal
 #endif
 
-//Pinout used for the touch panel
+//Pinout used for the touch panel. DO NOT CHANGE THIS!!
 #define YP A2  // must be an analog pin, use "An" notation!
 #define XM A3  // must be an analog pin, use "An" notation!
 #define YM 8   // can be a digital pin
 #define XP 9   // can be a digital pin
 
 
-//Pinout used for sensors and valves
+//Pinout used for sensors and valves. DO NOT CHANGE THIS!!!
 #define PIN_PRESSURE    A7
 #define PIN_SUCCTION    10   //13=D10
 #define PIN_VENTILATION 11   //14=D11
 #define PIN_PUMP        12   //15=D12
 
-//Parameters for the TouchScreen
-#define TS_MINX 75
-#define TS_MAXX 930
-#define TS_MINY 130
-#define TS_MAXY 905
-#define MINPRESSURE 10
-#define MAXPRESSURE 1000
+//Parameters for the active area of the TouchScreen.
+//  Change on your own risk!
+#define TS_MINX        75
+#define TS_MAXX        930
+#define TS_MINY        130
+#define TS_MAXY        905
+#define TS_MINPRESSURE 10    //Minimum pressure for recognizing a touch event
+#define TS_MAXPRESSURE 1000  //Maximum pressure for recognizing a touch event
 
-
+//Pinout for the LCD. Is this relevant? Ask Thorsten.
 #define LCD_CS A3
 #define LCD_CD A2
 #define LCD_WR A1
 #define LCD_RD A0
 #define LCD_RESET A4
+
+
+//Index for the buttons on main screen
+#define BTN_MAIN_GNDTIME     0
+#define BTN_MAIN_FLIGHTTIME  1
+#define BTN_MAIN_MAX_ALT     2
+#define BTN_MAIN_NO_CYCLE    3
+#define BTN_MAIN_START       4
+#define BTN_MAIN_STOP        5
+#define BTN_MAIN_SUCCTION    6
+#define BTN_MAIN_VENTILATION 7
+#define BTN_MAIN_PUMP        8
+
+//climb and descend cycles are implemented as a state machine.
+//here are the valid states
+#define CYCLE_CLIMB          0   //Start of machine
+#define CYCLE_HOLD_ALTITUDE  1
+#define CYCLE_DESCEND        2
+#define CYCLE_HOLD_GROUND    3
+#define CYCLE_END            4
+
+
+//Output number with 4 digits right aligned to the screen.
+//  Unfortunately avrgcc uses a minimized libc version where
+//  length designators in format strings are not allowed to be
+//  variable. Because of this, we need to write a format string
+//  with a fixed length. i.e. %05d (Very ugly)
+#define NUMBER2SCREEN(n,x,y,s) { char numBuf[INPUT_LEN+1];                                       \
+                                 sprintf(numBuf,"%05d",n);                                       \
+                                 for (int i=0; i<INPUT_LEN && numBuf[i]=='0';i++) numBuf[i]=' '; \
+                                 s.setCursor(x,y);                                               \
+                                 s.setTextColor(BLACK, WHITE); s.setTextSize(2);                 \
+                                 s.print(numBuf);                                                \
+                               }
+
+#define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) * (1-pow((float) pressure / 1013,(1/5.255))))
+#define CONVERT_METER2FEET(meters) (meters * 3.28084)
+
+
+//Set all variables for using the edit screen
+#define SWITCH_TO_EDITSCREEN(headline,value)   { \
+    editScreenHeadline=headline;     \
+    editPtr=&value;                  \
+    drawScreen=drawEditScreen;       \
+    updateScreen=updateEditScreen;   \
+    processScreen=processEditScreen; \
+    drawScreen(); }       
+
+//Set all variables for using the main screen
+#define SWITCH_TO_MAINSCREEN {       \
+    drawScreen=drawMainScreen;       \
+    updateScreen=updateMainScreen;   \
+    processScreen=processMainScreen; \
+    drawScreen(); }       
+
+/*
+ * PLAYGROUND SECTION
+ * 
+ * change everything you like
+ */
+
+//Initial values at program startup
+#define DEFAULT_TIME_GROUND 20;       //In seconds
+#define DEFAULT_TIME_FLIGHT 20;       //In seconds
+#define DEFAULT_SIM_ALTITUDE 10000;   //In feet
+#define DEFAULT_NO_CYCLES 10;         //Count of climb-descent cycles to do
+#define DEFAULT_GROUND_PRESSURE 1013; //Considered pressure for ground level (0 ft)
+
+#define FILTERFACTOR            0.6 //Damp input values by 60% 
+#define TOLERANCE               10  //Accept measurements in a window of +- 10 mBar (270 ft)
+#define SCREEN_PROCESS_INTERVAL  5  //Interval to process inputs in milliseconds
+#define SCREEN_UPDATE_INTERVAL  50  //Interval to update the screen in milliseconds
+
+#define INPUT_LEN 5                  //Length of data input field
+
+#define HEADLINE_TIME_GND    "Set: Time GND [sec] "
+#define HEADLINE_TIME_FLIGHT "Set: Time FLIGHT [sec] "
+#define HEADLINE_MAX_ALT     "Set: Max Altitude [ft] "
+#define HEADLINE_NO_CYCLES   "Set: No. of CYC [cyc] "
+
 
 // Color definitions
 #define BLACK       0x0000      /*   0,   0,   0 */
@@ -112,10 +197,11 @@
 #define GREENYELLOW 0xAFE5      /* 173, 255,  47 */
 #define PINK        0xF81F
 
-#define BUTTON_X 40
-#define BUTTON_Y 90
-#define BUTTON_W 80
-#define BUTTON_H 30
+//Look&Feel of the buttons on the main screen. 
+#define BUTTON_W          80   //Height of a button
+#define BUTTON_H          30   //Width of a button
+
+//Look&Feel of the buttons on the number pad screen
 #define BUTTON_SV_X 40
 #define BUTTON_SV_Y 90
 #define BUTTON_SV_W 65
@@ -124,7 +210,7 @@
 #define BUTTON_SPACING_Y 8
 #define BUTTON_TEXTSIZE 2
 
-// text box where numbers go
+//Text box at the number pad screen, where the entered numbers go
 #define TEXT_X 40
 #define TEXT_Y 44
 #define TEXT_W 235
@@ -132,74 +218,18 @@
 #define TEXT_TSIZE 3
 #define TEXT_TCOLOR BLACK
 
-// logo and Menu Page 1
+//Logo at the main screen
 #define LOGO_X 0
 #define LOGO_Y 0
 #define LOGO_W 320
 #define LOGO_H 35
 #define LOGO_TSIZE 2
 
-//Buttons for Page1
-#define BTN_MAIN_GNDTIME     0
-#define BTN_MAIN_FLIGHTTIME  1
-#define BTN_MAIN_MAX_ALT     2
-#define BTN_MAIN_NO_CYCLE    3
-#define BTN_MAIN_START       4
-#define BTN_MAIN_STOP        5
-#define BTN_MAIN_SUCCTION    6
-#define BTN_MAIN_VENTILATION 7
-#define BTN_MAIN_PUMP        8
-
-
-
-//Output number with 4 digits right aligned to the screen.
-//  Unfortunately avrgcc uses a minimized libc version where
-//  length designators in format strings are not allowed to be
-//  variable. Because of this, we need to write a format string
-//  with a fixed length. i.e. %05d (Very ugly)
-#define NUMBER2SCREEN(n,x,y,s) { char numBuf[INPUT_LEN+1];                                       \
-                                 sprintf(numBuf,"%05d",n);                                       \
-                                 for (int i=0; i<INPUT_LEN && numBuf[i]=='0';i++) numBuf[i]=' '; \
-                                 s.setCursor(x,y);                                               \
-                                 s.setTextColor(BLACK, WHITE); s.setTextSize(2);                 \
-                                 s.print(numBuf);                                                \
-                               }
-
-#define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) * (1-pow((float) pressure / 1013,(1/5.255))))
-#define CONVERT_METER2FEET(meters) (meters * 3.28084)
-
-/*
- * PLAYGROUND SECTION
- * 
- * change everything you like
- */
-
-//Initial values at program startup
-#define DEFAULT_TIME_GROUND 20;     //In seconds
-#define DEFAULT_TIME_FLIGHT 20;     //In seconds
-#define DEFAULT_SIM_ALTITUDE 10000; //In feet
-#define DEFAULT_NO_CYCLES 10;       //
-
-#define FILTERFACTOR            0.6 //Damp input values by 60% 
-#define TOLERANCE               10  //Accept measurements in a window of +- 10 mBar (270 ft)
-#define SCREEN_PROCESS_INTERVAL  5  //Interval to process inputs in milliseconds
-#define SCREEN_PAINT_INTERVAL   50  //Interval to update the screen in milliseconds
-
-#define INPUT_LEN 5                  //Length of data input field
-
-#define HEADLINE_TIME_GND    "Set: Time GND [sec] "
-#define HEADLINE_TIME_FLIGHT "Set: Time FLIGHT [sec] "
-#define HEADLINE_MAX_ALT     "Set: Max Altitude [ft] "
-#define HEADLINE_NO_CYCLES   "Set: No. of CYC [cyc] "
-
-
-Adafruit_GFX_Button BTN_Main[9];
 char mainButtonLabels[9][7] = {"20","20","3000","50",
                             "Start","Stop",
                             "Vlv1", "Vlv2", "Pump"};
 
 
-Adafruit_GFX_Button BTN_Edit[15];
 char editButtonLabels[15][6] = {"Back","Clear","OK",
                                 "1","2","3",
                                 "4","5","6",
@@ -224,6 +254,14 @@ uint16_t editButtonColors[15] = {RED, DARKGREY,GREEN,
  * nothing beyond this point. You've be warned!!
  */
 
+//Forward declarations
+void drawMainScreen(void);
+void updateMainScreen(void);
+void processMainScreen(void);
+void drawEditScreen(void);
+void updateEditScreen(void);
+void processEditScreen(void);
+
 
 /*+++++++++++++++++++++++++++++
  *          GLOBALS 
@@ -232,16 +270,26 @@ uint16_t editButtonColors[15] = {RED, DARKGREY,GREEN,
 
 MCUFRIEND_kbv tft;
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+Adafruit_GFX_Button BTN_Main[9];
+Adafruit_GFX_Button BTN_Edit[15];
+
+
+
 char     *editScreenHeadline;      //Pointer to the headline for the editScreen. One of HEADLINE_xxx
-uint32_t editScreenInput  = 0;
-char     activeScreenPage = 1;
-uint8_t  stateCycle=0;           //Shows wheather we are doing cycles
+uint32_t editScreenInput   = 0;
+
+//Three handy pointers to the screen management functions to be in use.
+void    (*updateScreen)()  = updateMainScreen;
+void    (*drawScreen)()    = drawMainScreen;
+void    (*processScreen)() = processMainScreen;
+
+uint8_t  stateCycle=0;            //Shows wheather we are doing cycles
 uint8_t  stateSucctionValve=0;    //Shows the current state of the sucction valve
 uint8_t  stateVentilationValve=0; //Shows the current state of the ventilation valve
 uint8_t  statePump=0;             //Shows the current state of the pump relais
 
-volatile int32_t touchXPos;      //X-coordinate of touch screen
-volatile int32_t touchYPos;      //Y-coordinate of touch screen
+volatile int32_t touchXPos;       //X-coordinate of touch screen
+volatile int32_t touchYPos;       //Y-coordinate of touch screen
 
 //Calculated variables
 int32_t flightHeight     = 0;
@@ -257,7 +305,11 @@ uint32_t *editPtr;             //Pointer to one editable variable
 uint32_t currentCycle= 0;      //Counter for cycles
 
 
-float currentPressure = 1013; //Current pressure value
+//Variables for the cycling state machine
+uint8_t  cyclingState=CYCLE_CLIMB;
+uint32_t cycleMillies=0;
+
+float currentPressure = DEFAULT_GROUND_PRESSURE; //Current pressure value
 
 
 
@@ -294,8 +346,8 @@ Return    : void
 
 void newMeasurement(void)
 {
-  currentPressure = lowPass(FILTERFACTOR,max(1013,
-                                         1013-(analogRead(PIN_PRESSURE)/204.8-0.21)*250));
+  currentPressure = lowPass(FILTERFACTOR,max(DEFAULT_GROUND_PRESSURE,
+                                         DEFAULT_GROUND_PRESSURE-(analogRead(PIN_PRESSURE)/204.8-0.21)*250));
   altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
   altitudeHeightFT = CONVERT_METER2FEET(altitudeHeightM);
 }
@@ -399,11 +451,36 @@ void readTouchScreen(void)
   pinMode(XM, OUTPUT);
   pinMode(YP, OUTPUT);
   
-  if (p.z > MINPRESSURE && p.z < MAXPRESSURE) {
+  if (p.z > TS_MINPRESSURE && p.z < TS_MAXPRESSURE) {
     // scale from 0->1023 to tft.width 
    touchYPos = (tft.height() - map(p.x, TS_MINX, TS_MAXX, tft.height(), 0));
    touchXPos = (tft.width()-map(p.y, TS_MAXY, TS_MINY, tft.width(), 0));
   } 
+}
+
+/*
+===============================================================================
+Function  : updateMainScreen
+Synopsis  : void updateMainScreen(void)
+Discussion: Update all dynamic elemnts on the main screen without redrawing the
+            whole screen.
+Return    : void
+*/
+
+void updateMainScreen(void)
+{
+  //Write all numerical values to the screen
+  NUMBER2SCREEN(currentPressure, 188,50, tft);
+  NUMBER2SCREEN(altitudeHeightM, 188,70, tft);
+  NUMBER2SCREEN(altitudeHeightFT,188,90, tft);
+  NUMBER2SCREEN(currentCycle,    188,110,tft);
+
+  BTN_Main[BTN_MAIN_START].drawButton(stateCycle);
+  BTN_Main[BTN_MAIN_STOP].drawButton(!stateCycle);
+  BTN_Main[BTN_MAIN_SUCCTION].drawButton(stateSucctionValve);
+  BTN_Main[BTN_MAIN_VENTILATION].drawButton(stateVentilationValve);
+  BTN_Main[BTN_MAIN_PUMP].drawButton(statePump);
+
 }
 
 /*
@@ -441,11 +518,6 @@ void drawMainScreen(void)
   tft.print("Max Altitude [ft]"); 
   tft.setCursor(9, 300);
   tft.print("No. of CYC [cyc]"); 
-  //Write all numerical values to the screen
-  NUMBER2SCREEN(currentPressure, 188,50, tft);
-  NUMBER2SCREEN(altitudeHeightM, 188,70, tft);
-  NUMBER2SCREEN(altitudeHeightFT,188,90, tft);
-  NUMBER2SCREEN(currentCycle,    188,110,tft);
    
   tft.fillRect(0, 445, 320, 35, NAVY);
   tft.setCursor(LOGO_X + 30, 445+10);
@@ -453,58 +525,71 @@ void drawMainScreen(void)
   tft.setTextSize(LOGO_TSIZE);
   tft.print("by LSV-Hohenasperg e.V.");
   
+  //Update the array for the labels, according to current values
+  sprintf(mainButtonLabels[BTN_MAIN_GNDTIME]   ,"%6d",timeGround);
+  sprintf(mainButtonLabels[BTN_MAIN_FLIGHTTIME],"%6d",timeFlight);
+  sprintf(mainButtonLabels[BTN_MAIN_MAX_ALT]   ,"%6d",maxAltitude);
+  sprintf(mainButtonLabels[BTN_MAIN_NO_CYCLE]  ,"%6d",noCycles);
+
   // create buttons (clickable things)
+
+  //Create & draw buttons with dynamic labels  
   BTN_Main[BTN_MAIN_GNDTIME].initButton(&tft, 275,155, BUTTON_W, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_GNDTIME], WHITE,
                       mainButtonLabels[BTN_MAIN_GNDTIME], BUTTON_TEXTSIZE); 
   BTN_Main[BTN_MAIN_GNDTIME].drawButton();
-  NUMBER2SCREEN(timeGround, 277,155, tft);
 
   BTN_Main[BTN_MAIN_FLIGHTTIME].initButton(&tft, 275,205, BUTTON_W, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_FLIGHTTIME], WHITE,
                       mainButtonLabels[BTN_MAIN_FLIGHTTIME], BUTTON_TEXTSIZE); 
   BTN_Main[BTN_MAIN_FLIGHTTIME].drawButton();
-  NUMBER2SCREEN(timeFlight, 277,205, tft);
   
   BTN_Main[BTN_MAIN_MAX_ALT].initButton(&tft, 275,255, BUTTON_W, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_MAX_ALT], WHITE,
                       mainButtonLabels[BTN_MAIN_MAX_ALT], BUTTON_TEXTSIZE); 
   BTN_Main[BTN_MAIN_MAX_ALT].drawButton();
-  NUMBER2SCREEN(maxAltitude, 277,255, tft);
   
   BTN_Main[BTN_MAIN_NO_CYCLE].initButton(&tft, 275,305, BUTTON_W, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_NO_CYCLE], WHITE,
                       mainButtonLabels[BTN_MAIN_NO_CYCLE], BUTTON_TEXTSIZE); 
   BTN_Main[BTN_MAIN_NO_CYCLE].drawButton();
-  NUMBER2SCREEN(noCycles, 277,305, tft);
- 
+
+
+  //Static buttons from here on
   BTN_Main[BTN_MAIN_START].initButton(&tft, 85, 355, 130, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_START], WHITE,
                       mainButtonLabels[BTN_MAIN_START], BUTTON_TEXTSIZE); 
-  BTN_Main[BTN_MAIN_START].drawButton(stateCycle);
   
   BTN_Main[BTN_MAIN_STOP].initButton(&tft, 235,355, 130, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_STOP], WHITE,
                       mainButtonLabels[BTN_MAIN_STOP], BUTTON_TEXTSIZE); 
-  BTN_Main[BTN_MAIN_STOP].drawButton(!stateCycle);
   
   BTN_Main[BTN_MAIN_SUCCTION].initButton(&tft, 60,420, 80, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_SUCCTION], WHITE,
                       mainButtonLabels[BTN_MAIN_SUCCTION], BUTTON_TEXTSIZE); 
-  BTN_Main[BTN_MAIN_SUCCTION].drawButton(stateSucctionValve);
 
   BTN_Main[BTN_MAIN_VENTILATION].initButton(&tft, 160, 420, 80, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_VENTILATION], WHITE,
                       mainButtonLabels[BTN_MAIN_VENTILATION], BUTTON_TEXTSIZE); 
-  BTN_Main[BTN_MAIN_VENTILATION].drawButton(stateVentilationValve);
 
   BTN_Main[BTN_MAIN_PUMP].initButton(&tft, 260,420, 80, BUTTON_H, BLACK, 
                       mainButtonColors[BTN_MAIN_PUMP], WHITE,
                       mainButtonLabels[BTN_MAIN_PUMP], BUTTON_TEXTSIZE); 
-  BTN_Main[BTN_MAIN_PUMP].drawButton(statePump);
 
 
   
+}
+
+/*
+===============================================================================
+Function  : updateEditScreen
+Synopsis  : void updateEditScreen(void)
+Discussion: Update dynamic values on the number pad screen (editScreen)
+Return    : void
+*/
+void updateEditScreen(void)
+{
+  NUMBER2SCREEN(editScreenInput,TEXT_X+130,TEXT_Y+10,tft);
 }
 
 /*
@@ -524,7 +609,7 @@ void drawEditScreen(void)
 
   tft.print(editScreenHeadline);
 
-  // create buttons
+  // create buttons (terrible hack to create a 3x3 matrix)
   for (uint8_t row=0; row<5; row++) {
     for (uint8_t col=0; col<3; col++) {
       BTN_Edit[col + row*3].initButton(&tft, BUTTON_SV_X+35+col*(BUTTON_SV_W+BUTTON_SPACING_X+10),
@@ -537,7 +622,6 @@ void drawEditScreen(void)
   // create 'text field'
   tft.drawRect(TEXT_X, TEXT_Y, TEXT_W, TEXT_H, BLACK);
 
-  NUMBER2SCREEN(editScreenInput,TEXT_X+130,TEXT_Y+10,tft);
 }
 
 
@@ -561,38 +645,25 @@ void processMainScreen(void)
       break;
     }
 
-uint8_t stateCycle=0;
   switch (button){
     case BTN_MAIN_GNDTIME:
-              if (!stateCycle) {
-                editScreenHeadline=HEADLINE_TIME_GND;
-                editPtr=&timeGround;
-                activeScreenPage = 2;
-              }
+              if (!stateCycle)
+		SWITCH_TO_EDIT_SCREEN(HEADLINE_TIME_GND,timeGround);
               break;
               
     case BTN_MAIN_FLIGHTTIME:
-              if (!stateCycle) {
-                editScreenHeadline=HEADLINE_TIME_FLIGHT;
-                editPtr=&timeFlight;
-                activeScreenPage = 2;
-              }
-              break;
+              if (!stateCycle)
+		SWITCH_TO_EDIT_SCREEN(HEADLINE_TIME_FLIGHT,timeFlight);
+	      break;
               
     case BTN_MAIN_MAX_ALT:
-              if (!stateCycle) {
-                editScreenHeadline=HEADLINE_MAX_ALT;
-                editPtr=&maxAltitude;
-                activeScreenPage = 2;
-              }
+              if (!stateCycle)
+		SWITCH_TO_EDIT_SCREEN(HEADLINE_MAX_ALT,maxAltitude);
               break;
               
     case BTN_MAIN_NO_CYCLE:
-              if (!stateCycle) {
-                editScreenHeadline=HEADLINE_NO_CYCLES;
-                editPtr=&noCycles;
-                activeScreenPage = 2;
-              }
+              if (!stateCycle)
+		SWITCH_TO_EDIT_SCREEN(HEADLINE_NO_CYCLES,noCycles);
               break;
 
     case BTN_MAIN_START:
@@ -652,7 +723,7 @@ void processEditScreen(void)
     if (BTN_Edit[b].justPressed())
       switch(b){
         case 0: //Back
-          activeScreenPage = 1; //Back to the main screen
+	  SWITCH_TO_MAINSCREEN;
           break;
 
         case 1: //Clear
@@ -661,7 +732,7 @@ void processEditScreen(void)
           
         case 2: //OK
           *editPtr=editScreenInput;
-          activeScreenPage = 1; //Back to main screen
+	  SWITCH_TO_MAINSCREEN;
           break;
         
         case 12://+
@@ -683,6 +754,81 @@ void processEditScreen(void)
   }
   
 }
+
+/*
+===============================================================================
+Function  : processCycles
+Synopsis  : void processCycles(void)
+Discussion: 
+	    PROCESING OF CYCLES
+
+	    Implemented as a state machine. State variable is cyclingState.
+	    One cycle is:
+	    1. Go to the specified altitude
+	    2. Wait timeFlight seconds
+	    3. Go to the ground altitude
+	    4. Wait timeGround seconds
+Return    : void
+ */
+
+void processCycles(void)
+{
+
+  
+  switch (cyclingState) {
+  case CYCLE_CLIMB:
+    //destination pressure is DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0))
+    level(DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0));
+
+    //advance state if altitude is reached
+    if (tolerance(currentPressure,DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0))==0)
+      cyclingState++;
+
+    cycleMillies=millies;
+    break;
+    
+  case CYCLE_HOLD_ALTITUDE:
+    level(DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0));
+    if (millies >= cycleMillies + 1000*timeFlight)
+      cyclingState++;
+    
+    break;
+    
+  case CYCLE_DESCEND:
+    //destination pressure is DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0))
+    level(DEFAULT_GROUND_PRESSURE);
+
+    //advance state if ground is reached
+    if (tolerance(currentPressure,DEFAULT_GROUND_PRESSURE)==0)
+      cyclingState++;
+
+    cycleMillies=millies;
+    break;
+    
+  case CYCLE_HOLD_GROUND:
+    level(DEFAULT_GROUND_PRESSURE);
+    if (millies >= cycleMillies + 1000*timeGround)
+      cyclingState++;
+    break;
+
+  case CYCLE_END:
+    currentCycle++;
+    if (currentCycle >= noCycles)
+      stateCyle=0; //End cycling
+
+    cyclingState=CYCLE_CLIMB;
+    break;
+    
+  default:
+    //Error handling
+    cyclingState=CYCLE_CLIMB;
+    stateCycle=0;
+    break;
+    
+  }
+}
+
+
 /*=========================================================================================
  * 
  *                             S E T U P
@@ -713,6 +859,8 @@ void setup(void) {
   TIMSK0|=(1<<OCIE0A);  //Set the interrupt request
   sei();                //Enable interrupt
 
+  //Always start with the main screen
+  SWITCH_TO_MAINSCREEN;
 }
 
 /*=========================================================================================
@@ -739,35 +887,16 @@ void loop()
 {
 
   //Pressure measurement every MEASUREMENT_INTERVAL ms
-  if (millies%MEASUREMENT_INTERVAL == 0)
+  if (!(millies%MEASUREMENT_INTERVAL))
     newMeasurement(); //It's time for a new measurement
 
-  if (!millies%SCREEN_PAINT_INTERVAL)
-    switch(activeScreenPage) {
-      case 1:
-          drawMainScreen();
-          break;
-      case 2:
-          drawEditScreen();
-          break;
-      default:
-          //Huuuuh this is crazy!
-          break;
-    }
+  if (!(millies%SCREEN_UPDATE_INTERVAL))
+    updateScreen();  //It's time to update screen values
 
-  if (!millies%SCREEN_PROCESS_INTERVAL)
-    switch(activeScreenPage) {
-      case 1:
-          processMainScreen();
-          break;
-      case 2:
-          processEditScreen();
-          break;
-      default:
-          //Huuuuh this is crazy!
-          break;
-    }
+  if (!(millies%SCREEN_PROCESS_INTERVAL))
+    processScreen(); //Time for user input processing
 
- 
+  if (stateCycle)
+    processCycles();
 
 }
