@@ -15,7 +15,11 @@
   * Damit der Sketch kompiliert werden kann, müssen einige Bibliotheken in die Toolchain eingebunden werden. Alle benötigten Bibliotheken liegen im Ordner **Libs**. Um die Bibliotheken einzubinden, in der Arduino-IDE wie folgt vorgehen:
     Menu Sketch->Bibliothek einbinden->Zip-Bibliothek hinzufügen
     Diesen Befehl für jede Zip-Datei ausführen, die sich im Verzeichnis _Libs_ befindet.
+  * Boardtype "Arduino Duemilanove or Diecimila" und Processor "ATMega328P" im Menu "Werkzeuge" auswählen.
+  * USB-Kabel des Controllers am PC anschließen.
+  * Checken ob unter Werkzeuge->Port der richtige Anschluss eingestellt ist.
   * Kompilieren des Codes mit Strg-R. 
+  * Hochladen des Codes auf den Controller mit Strg-U
 
 #Autoren
   * Thorsten Klinkhammer
