@@ -254,12 +254,14 @@
     1. Update all values on the screen  --> SCREEN_UPDATE_INTERVAL
     2. Check and process user inputs    --> SCREEN_PROCESS_INTERVAL
     3. Start a new pressure measurement --> MEASUREMENT_INTERVAL
+    4. Write protocol data to serial out--> PROTOCOL_INTERVAL
 
   All numbers are interpreted in milliseconds.
  */
 #define SCREEN_PROCESS_INTERVAL   5 
 #define SCREEN_UPDATE_INTERVAL    5 
-#define MEASUREMENT_INTERVAL     20 
+#define MEASUREMENT_INTERVAL     20
+#define PROTOCOL_INTERVAL       200
 
 #define INPUT_LEN 5                  //Length of data input field
 
@@ -407,6 +409,8 @@ uint8_t  cyclingState = CYCLE_CLIMB;
 uint32_t cycleMillies = 0;
 
 uint16_t currentPressure  = DEFAULT_GROUND_PRESSURE;//Current pressure value
+int      pressureDeduction=0;                       //First deduction of the pressure curve; positive in climb and negative in descend
+                                                    //in mBar/s
 volatile uint32_t millies = 0;                      //Used to count the timer interrupts
 uint8_t touchDebounce     = TS_DEBOUNCE_COUNTER;    //Suppress n following touch events after a successful ts reading
 bool eventHappened        =true;                    //Controls wheather a value update on the screen is required
@@ -447,8 +451,10 @@ uint16_t lowPass(uint16_t factor, uint16_t measure)
 
 void newMeasurement(void)
 {
+  uint16_t oldPressure=currentPressure;
   currentPressure = lowPass(PRESSURE_FILTERFACTOR, min(DEFAULT_GROUND_PRESSURE,
                             DEFAULT_GROUND_PRESSURE - (analogRead(PIN_PRESSURE) / 204.8 - 0.21) * 250));
+  pressureDeduction=(pressureDeduction*0.1+(oldPressure-currentPressure)*(1000/ MEASUREMENT_INTERVAL))/1.1;
   altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
   altitudeHeightFT= CONVERT_METER2FEET(altitudeHeightM);
 }
@@ -726,6 +732,7 @@ void processMainScreen(void)
       break;
 
     case BTN_MAIN_START:
+      Serial.println("Millies;timeGround;timeFlight;maxAltitude;noCycles;currentCycle;stateCycle;stateSucctionValve;stateVentilationValve;statePump;currentPressure;pressureDeduction");
       stateCycle = 1;
       break;
 
@@ -984,6 +991,26 @@ void loop()
     
   if (!(millies % SCREEN_PROCESS_INTERVAL))
     processScreen(); //Time for user input processing
+
+  if (!(millies % PROTOCOL_INTERVAL) && stateCycle) {
+    char serialBuffer[128];
+    sprintf(serialBuffer,"%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d",
+	    Millies,
+	    timeGround,
+	    timeFlight,
+	    maxAltitude,
+	    noCycles,
+	    currentCycle,
+	    stateCycle,
+	    stateSucctionValve,
+	    stateVentilationValve,
+	    statePump,
+	    currentPressure,
+	    pressureDeduction);
+    Serial.println(serialBuffer);
+
+  }
+    
 
   if (stateCycle)
     processCycles();
