@@ -15,9 +15,6 @@
           lowPass()           - Smoothes values, read from the pressure sensor
           newMeasurement()    - Reads a new value from the pressure sensor
           tolerance()         - Checks if a value is in the tolerable interval
-          climb()             - Sets all digital outputs for a climb (reducing pressure)
-          descend()           - Sets all digital outputs for a descend (raising pressure)
-          level()             - Maintains a given pressure
           readTouchScreen()   - Reads the touchscreen coordinates (user input)
           updateMainScreen()  - Update dynamic elements on main screen
           drawMainScreen()    - Paints all elements for the main screen
@@ -62,6 +59,14 @@
   +++++++++++++++++++++++++++++
 */
 
+/*
+  All digital output pins are connected to optocouples. 
+  This is why the logic is inverted. If the digital output is
+  low, the logical meaning is "active" and vice versa
+ */
+#define ON  LOW
+#define OFF HIGH
+
 //Pinout used for the touch panel. DO NOT CHANGE THIS!!
 #define YP A2  // must be an analog pin, use "An" notation!
 #define XM A3  // must be an analog pin, use "An" notation!
@@ -75,6 +80,53 @@
 #define PIN_VENTILATION 10   
 #define PIN_PUMP        12   
 
+//Macros for actuator control
+#define ACTUATOR_PUMP(newState) {      \
+  digitalWrite(PIN_PUMP,newState);     \
+  statePump=!newState;                 \
+  }
+
+#define ACTUATOR_SUCCTION(newState) {  \
+  digitalWrite(PIN_SUCCTION,newState); \
+  stateSucctionValve=!newState;        \
+  }
+
+#define ACTUATOR_VENTILATION(newState) { \
+  digitalWrite(PIN_VENTILATION,newState);\
+  stateVentilationValve=!newState;       \
+  }
+
+#define CLIMB_FAST {        \
+  ACTUATOR_PUMP(ON);        \
+  ACTUATOR_SUCCTION(ON);    \
+  ACTUATOR_VENTILATION(OFF);\
+}
+
+#define CLIMB_SLOW {         \
+  ACTUATOR_PUMP(ON);         \
+  ACTUATOR_SUCCTION(ON);     \
+  ACTUATOR_VENTILATION(ON);  \
+  }
+
+#define DESCEND_FAST {      \
+  ACTUATOR_PUMP(OFF);       \
+  ACTUATOR_SUCCTION(ON);    \
+  ACTUATOR_VENTILATION(ON); \
+  }
+
+#define DESCEND_SLOW {      \
+  ACTUATOR_PUMP(OFF);       \
+  ACTUATOR_SUCCTION(ON);    \
+  ACTUATOR_VENTILATION(OFF);\
+  }
+
+#define HOLD_ALT {          \
+  ACTUATOR_PUMP(OFF);       \
+  ACTUATOR_SUCCTION(OFF);   \
+  ACTUATOR_VENTILATION(OFF);\
+  }
+
+
 //Parameters for the active area of the TouchScreen.
 //  Change on your own risk!
 #define TS_MINX        75
@@ -84,15 +136,6 @@
 #define TS_MINPRESSURE 10    //Minimum pressure for recognizing a touch event
 #define TS_MAXPRESSURE 1000  //Maximum pressure for recognizing a touch event
 #define TS_DEBOUNCE_COUNTER 2//Suppress 2 readings after a successful ts reading
-
-//Pinout for the LCD. Is this relevant? Ask Thorsten.
-/*
-  #define LCD_CS A3
-  #define LCD_CD A2
-  #define LCD_WR A1
-  #define LCD_RD A0
-  #define LCD_RESET A4
-*/
 
 //Index for the buttons on main screen
 #define BTN_MAIN_GNDTIME     0
@@ -114,16 +157,21 @@
 #define CYCLE_END            4
 
 
-//Output number with 4 digits right aligned to the screen.
+//Output number with 5 digits right aligned to the screen.
 //  Unfortunately avrgcc uses a minimized libc version where
 //  length designators in format strings are not allowed to be
-//  variable. Because of this, we need to write a format string
-//  with a fixed length. i.e. %05d (Very ugly)
-#define NUMBER2SCREEN(n,x,y,s) { char numBuf[INPUT_LEN+1];                                       \
-    sprintf(numBuf,"%5d",n);                                       \
-    s.setCursor(x,y);                                               \
-    s.setTextColor(BLACK, WHITE); s.setTextSize(2);                 \
-    s.print(numBuf);                                                \
+//  variable. Because of this, we need to create a format-string
+//  by our own, which respects the current length of text fields.
+//  (This works but consumes additional cpu time)
+#define NUMBER2SCREEN(n,x,y,s) {                    \
+    char numBuf[INPUT_LEN+1];			    \
+    char fmtString[4];				    \
+    sprintf(fmtString,"%%%dd",INPUT_LEN);	    \
+    sprintf(numBuf,fmtString,n);		    \
+    s.setCursor(x,y);				    \
+    s.setTextColor(BLACK, WHITE);                   \
+    s.setTextSize(2);				    \
+    s.print(numBuf);				    \
   }
 
 #define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) * (1-pow((float) pressure / 1013,(1/5.255))))
@@ -137,14 +185,16 @@
     drawScreen=drawEditScreen;       \
     updateScreen=updateEditScreen;   \
     processScreen=processEditScreen; \
-    drawScreen(); }
+    drawScreen();                    \
+  }
 
 //Set all variables for using the main screen
 #define SWITCH_TO_MAINSCREEN {       \
     drawScreen=drawMainScreen;       \
     updateScreen=updateMainScreen;   \
     processScreen=processMainScreen; \
-    drawScreen(); }
+    drawScreen();                    \
+  }
 
 /*
    PLAYGROUND SECTION
@@ -152,18 +202,64 @@
    change everything you like
 */
 
-//Initial values at program startup
-#define DEFAULT_TIME_GROUND 20       //In seconds
-#define DEFAULT_TIME_FLIGHT 20       //In seconds
-#define DEFAULT_SIM_ALTITUDE 10000   //In feet
-#define DEFAULT_NO_CYCLES 10         //Count of climb-descent cycles to do
+/*
+  Initial values for adjustable data fields at program startup.
+  Be careful to not use values with more than INPUT_LEN digits.
+*/
+#define DEFAULT_TIME_GROUND  60      //In seconds
+#define DEFAULT_TIME_FLIGHT  60      //In seconds
+#define DEFAULT_SIM_ALTITUDE 16000   //In feet
+#define DEFAULT_NO_CYCLES    10      //Count of climb-descent cycles to do
+
+
+/*
+  The program needs to know the pressure at GND-level. The current implementation
+  assumes to be at ground at a specific pressure. In fact, we use a differential
+  pressure sensor and if the sensor delivers a pressure of 0, we are on the ground
+  and we need to assume the pressure at ground for all calculations. This is why 
+  all calculated heights are relative to GND and not to MSL!
+*/
 #define DEFAULT_GROUND_PRESSURE 1013 //Considered pressure for ground level (0 ft)
 
-#define FILTERFACTOR            0.6 //Damp input values by 60% 
-#define TOLERANCE               100  //Accept measurements in a window of +- 10 mBar (270 ft)
-#define SCREEN_PROCESS_INTERVAL   5 //Interval to process inputs in milliseconds
-#define SCREEN_UPDATE_INTERVAL    5 //Interval to update the screen in milliseconds
-#define MEASUREMENT_INTERVAL    100 //Pressure measurement every 100 ms
+/*
+  The pressure sensor has jumping readings and needs to be damped somehow.
+  This is done using a low pass filter which bypasses only low frequencies.
+  If you want to dampen the value more, adjust the value closer to 1. 
+  Alowed values are 0.1 to 0.9
+*/
+#define PRESSURE_FILTERFACTOR   0.7
+
+
+/*
+  The controller tolerates pressures in a range with a specific width.
+  For example: If you want to have a pressure of 250 mBar, the controller
+  is happy if the current pressure is between (250 - TOLERANCE) and
+  (250 + TOLERANCE). If not, it will take actions to adjust the pressure.
+  Set the value for the tolerance window below. If the value is small,
+  the controller will do a lot of corrections. Be careful with small
+  values! 
+
+  Attention: This is mBar and NOT feet!!
+ */
+#define ALTITUDE_PRESSURE_TOLERANCE 20  
+
+
+/*
+  Timings: 
+  The main program runs several tasks periodically.
+  you may adjust the timing intervals for each task 
+  seperately. At the moment, there are three tasks
+  and for each of them you may adjust the timing interval in milliceconds.
+
+    1. Update all values on the screen  --> SCREEN_UPDATE_INTERVAL
+    2. Check and process user inputs    --> SCREEN_PROCESS_INTERVAL
+    3. Start a new pressure measurement --> MEASUREMENT_INTERVAL
+
+  All numbers are interpreted in milliseconds.
+ */
+#define SCREEN_PROCESS_INTERVAL   5 
+#define SCREEN_UPDATE_INTERVAL    5 
+#define MEASUREMENT_INTERVAL     20 
 
 #define INPUT_LEN 5                  //Length of data input field
 
@@ -310,10 +406,11 @@ uint32_t currentCycle = 0;     //Counter for cycles
 uint8_t  cyclingState = CYCLE_CLIMB;
 uint32_t cycleMillies = 0;
 
-uint16_t currentPressure = DEFAULT_GROUND_PRESSURE; //Current pressure value
-volatile unsigned int millies = 0;          //Used to count the timer interrupts
-uint8_t touchDebounce=TS_DEBOUNCE_COUNTER; //Suppress n following touch events after a successful ts reading
-bool eventHappened=true;                  //Controls wheather a value update on the screen is required
+uint16_t currentPressure  = DEFAULT_GROUND_PRESSURE;//Current pressure value
+volatile uint32_t millies = 0;                      //Used to count the timer interrupts
+uint8_t touchDebounce     = TS_DEBOUNCE_COUNTER;    //Suppress n following touch events after a successful ts reading
+bool eventHappened        =true;                    //Controls wheather a value update on the screen is required
+enum {altTolerable,altTooLow,altTooHigh};
 
 
 
@@ -350,89 +447,35 @@ uint16_t lowPass(uint16_t factor, uint16_t measure)
 
 void newMeasurement(void)
 {
-  currentPressure = lowPass(FILTERFACTOR, min(DEFAULT_GROUND_PRESSURE,
+  currentPressure = lowPass(PRESSURE_FILTERFACTOR, min(DEFAULT_GROUND_PRESSURE,
                             DEFAULT_GROUND_PRESSURE - (analogRead(PIN_PRESSURE) / 204.8 - 0.21) * 250));
   altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
-  altitudeHeightFT = CONVERT_METER2FEET(altitudeHeightM);
+  altitudeHeightFT= CONVERT_METER2FEET(altitudeHeightM);
 }
 
 /*
   ===============================================================================
   Function  : tolerance
-  Synopsis  : int tolerance(float measurement,float goal)
+  Synopsis  : int tolerance(unit32_t measurement,unit32_t goal)
   Discussion: Determine weather the current measurement is in the acceptable
             window
-  Return    : positive - Masurement is too high (altitude too low)
-            0        - Measurement is in tolerance window
-            negative - Measurement is too low (altitude too high)
+  Return    altTooLow    - Masurement is too high (altitude too low)
+            altTolerable - Measurement is in tolerance window
+            altTooHigh   - Measurement is too low (altitude too high)
 */
-int tolerance(float measurement, float goal)
+int tolerance(unit32_t measurement, unit32_t goal)
 {
-  float delta;
+  unit32_t delta;
 
   delta = measurement - goal; //delta positive means height not reached (too low)
 
-  if  (abs(delta) <= TOLERANCE)
-    return 0; //Measurement tolerable
+  if  (abs(delta) <= ALTITUDE_PRESSURE_TOLERANCE)
+    return altTolerable;//Pressure tolerable
 
-  if (measurement < goal - TOLERANCE)
-    return -1; //Measurement too low
+  if (measurement < goal - ALTITUDE_PRESSURE_TOLERANCE)
+    return altTooHigh; //Pressure too low
 
-  return 1; //Measurement too high
-}
-
-/*
-  ===============================================================================
-  Function  : climb
-  Synopsis  : int climb(float goal)
-  Discussion: Setup of all valves and relais to make the chamber climb
-  Return    : 0 - climbing not needed
-            1 - climbing required
-*/
-int climb(float goal)
-{
-  if (tolerance(currentPressure, goal) == 1) {
-    digitalWrite(PIN_PUMP, LOW);       //Switch on pump
-    digitalWrite(PIN_SUCCTION, LOW);   //Switch on sucction valve
-    digitalWrite(PIN_VENTILATION, HIGH); //Switch off ventilation valve
-    return 1;
-  }
-  return 0;
-}
-
-/*
-  ===============================================================================
-  Function  : descend
-  Synopsis  : int descend(float goal)
-  Discussion: Setup of all valves and relais to make the chamber descend
-  Return    : 0 - Descending not needed
-            1 - Descend required
-*/
-int descend(float goal)
-{
-  if (tolerance(currentPressure, goal) == -1) {
-    digitalWrite(PIN_PUMP, HIGH);       //Switch off pump
-    digitalWrite(PIN_SUCCTION, HIGH);   //Switch off sucction valve
-    digitalWrite(PIN_VENTILATION, LOW); //Switch on ventilation valve
-    return 1;
-  }
-  return 0;
-}
-
-/*
-  ===============================================================================
-  Function  : level
-  Synopsis  : void level(uint16_t pressure)
-  Discussion: Maintain the current pressure level
-  Return    : void
-*/
-void level(uint16_t pressure)
-{
-  if ( !climb(pressure) && !descend(pressure)) {
-    digitalWrite(PIN_PUMP, HIGH);       //Switch off pump
-    digitalWrite(PIN_SUCCTION, HIGH);   //Switch off sucction valve
-    digitalWrite(PIN_VENTILATION, HIGH); //Switch off ventilation valve
-  }
+  return altTooLow;   //Pressure too high
 }
 
 
@@ -692,22 +735,28 @@ void processMainScreen(void)
 
     case BTN_MAIN_SUCCTION:
       if (!stateCycle) {
-        stateSucctionValve = 1 - stateSucctionValve;
-        digitalWrite(PIN_SUCCTION, !stateSucctionValve);
+        if (stateSucctionValve)
+	  ACTUATOR_SUCCTION(OFF);
+	else
+	  ACTUATOR_SUCCTION(ON);
       }
       break;
 
     case BTN_MAIN_VENTILATION:
       if (!stateCycle) {
-        stateVentilationValve = 1 - stateVentilationValve;
-        digitalWrite(PIN_VENTILATION, !stateVentilationValve);
+        if(stateVentilationValve)
+	  ACTUATOR_VENTILATION(OFF);
+	else
+	  ACTUATOR_VENTILATION(ON);
       }
       break;
 
     case BTN_MAIN_PUMP:
       if (!stateCycle) {
-        statePump = 1 - statePump;
-        digitalWrite(PIN_PUMP, !statePump);
+	if (statePump)
+	  ACTUATOR_PUMP(OFF);
+	else 
+	  ACTUATOR_PUMP(ON);
       }
       break;
   }
@@ -785,50 +834,77 @@ void processEditScreen(void)
 	    4. Wait timeGround seconds
   Return    : void
 */
+
 void processCycles(void)
 {
 
-
+  unit32_t pressureDest=DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0);
+  int      weAre;
+    
   switch (cyclingState) {
     case CYCLE_CLIMB:
-      //destination pressure is DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0))
-      level(DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0));
+      weAre=tolerance(currentPressure, pressureDest);
 
-      //advance state if altitude is reached
-      if (tolerance(currentPressure, DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0)) == 0)
+      //Climb if we are below the destination altitude
+      if (weAre == altTooLow)
+	CLIMB_FAST;
+
+      //advance state if desired altitude is reached
+      else if (weAre == altTolerable)
         cyclingState++;
 
       cycleMillies = millies;
       break;
 
     case CYCLE_HOLD_ALTITUDE:
-      level(DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0));
+      weAre=tolerance(currentPressure, pressureDest);
+
+      //If weAre tooHigh, open one valve for a smooth descend
+      if (weAre == altTooHigh)
+	DESCEND_SLOW;
+      
+      //climb if necessary
+      if (weAre == altTooLow)
+	CLIMB_FAST;
+
+      //Hold altitude if we are OK
+      if (weAre == altTolerable)
+	HOLD_ALT;
+
+      //Check if flight time is reached
       if (millies >= cycleMillies + 1000 * timeFlight)
         cyclingState++;
 
       break;
 
     case CYCLE_DESCEND:
-      //destination pressure is DEFAULT_GROUND_PRESSURE-(maxAltitude/27.0))
-      level(DEFAULT_GROUND_PRESSURE);
+      weAre=tolerance(currentPressure, DEFAULT_GROUND_PRESSURE);
+
+      //Descend if we are above the destination altitude
+      if (weAre == altTooHigh)
+	DESCEND_FAST;
 
       //advance state if ground is reached
-      if (tolerance(currentPressure, DEFAULT_GROUND_PRESSURE) == 0)
+      if (weAre == altTolerable)
         cyclingState++;
 
       cycleMillies = millies;
       break;
 
     case CYCLE_HOLD_GROUND:
-      level(DEFAULT_GROUND_PRESSURE);
+
+      //Check if ground time is reached
       if (millies >= cycleMillies + 1000 * timeGround)
         cyclingState++;
       break;
 
     case CYCLE_END:
       currentCycle++;
-      if (currentCycle >= noCycles)
+      if (currentCycle >= noCycles) {
+	currentCycle=0;
         stateCycle = 0; //End cycling
+	HOLD_ALT;
+      }
 
       cyclingState = CYCLE_CLIMB;
       break;
@@ -862,9 +938,9 @@ void setup(void) {
   pinMode(PIN_SUCCTION, OUTPUT);
   pinMode(PIN_VENTILATION, OUTPUT);
   pinMode(PIN_PUMP, OUTPUT);
-  digitalWrite(PIN_SUCCTION, HIGH);
-  digitalWrite(PIN_VENTILATION, HIGH);
-  digitalWrite(PIN_PUMP, HIGH);
+  ACTUATOR_SUCCTION(OFF);
+  ACTUATOR_VENTILATION(OFF);
+  ACTUATOR_PUMP(OFF);
 
   //Now setup timer0 to generate an interrupt every 1 ms
   TCCR0B |= (1 << CS01); //Set the prescaler to 8
@@ -885,7 +961,7 @@ void setup(void) {
 
 
 ISR(TIMER0_COMPA_vect) {   //This is the interrupt service routine for timer0
-  //Measure the pressure every N milliseconds
+  //Advance the counter for milliseconds
   millies++;
 }
 
