@@ -60,10 +60,10 @@
 */
 
 /*
-  All digital output pins are connected to optocouples. 
+  All digital output pins are connected to optocouples.
   This is why the logic is inverted. If the digital output is
   low, the logical meaning is "active" and vice versa
- */
+*/
 #define ON  LOW
 #define OFF HIGH
 
@@ -76,54 +76,62 @@
 
 //Pinout used for sensors and valves. DO NOT CHANGE THIS!!!
 #define PIN_PRESSURE    A7
-#define PIN_SUCCTION    11   
-#define PIN_VENTILATION 10   
-#define PIN_PUMP        12   
+#define PIN_SUCCTION    11
+#define PIN_VENTILATION 10
+#define PIN_PUMP        12
 
 //Macros for actuator control
 #define ACTUATOR_PUMP(newState) {      \
-  digitalWrite(PIN_PUMP,newState);     \
-  statePump=!newState;                 \
+    digitalWrite(PIN_PUMP,newState);     \
+    statePump=!newState;                 \
   }
 
 #define ACTUATOR_SUCCTION(newState) {  \
-  digitalWrite(PIN_SUCCTION,newState); \
-  stateSucctionValve=!newState;        \
+    digitalWrite(PIN_SUCCTION,newState); \
+    stateSucctionValve=!newState;        \
   }
 
 #define ACTUATOR_VENTILATION(newState) { \
-  digitalWrite(PIN_VENTILATION,newState);\
-  stateVentilationValve=!newState;       \
+    digitalWrite(PIN_VENTILATION,newState);\
+    stateVentilationValve=!newState;       \
   }
 
+#define TOGGLE_ACTUATOR(actuator,stateVar)  actuator(stateVar)
+
+
 #define CLIMB_FAST {        \
-  ACTUATOR_PUMP(ON);        \
-  ACTUATOR_SUCCTION(ON);    \
-  ACTUATOR_VENTILATION(OFF);\
-}
+    ACTUATOR_PUMP(ON);        \
+    ACTUATOR_SUCCTION(ON);    \
+    ACTUATOR_VENTILATION(OFF);\
+    toggleSucction=false;     \
+  }
 
 #define CLIMB_SLOW {         \
-  ACTUATOR_PUMP(ON);         \
-  ACTUATOR_SUCCTION(ON);     \
-  ACTUATOR_VENTILATION(ON);  \
+    ACTUATOR_PUMP(ON);         \
+    ACTUATOR_SUCCTION(ON);    \
+    ACTUATOR_VENTILATION(OFF); \
+    toggleSucction=true;       \
   }
 
 #define DESCEND_FAST {      \
-  ACTUATOR_PUMP(OFF);       \
-  ACTUATOR_SUCCTION(ON);    \
-  ACTUATOR_VENTILATION(ON); \
+    ACTUATOR_PUMP(OFF);       \
+    ACTUATOR_SUCCTION(ON);    \
+    ACTUATOR_VENTILATION(ON); \
+    toggleSucction=false;     \
   }
 
 #define DESCEND_SLOW {      \
-  ACTUATOR_PUMP(OFF);       \
-  ACTUATOR_SUCCTION(ON);    \
-  ACTUATOR_VENTILATION(OFF);\
+    ACTUATOR_PUMP(OFF);       \
+    ACTUATOR_SUCCTION(ON);    \
+    ACTUATOR_VENTILATION(OFF);\
+    toggleSucction=false;     \
   }
 
 #define HOLD_ALT {          \
-  ACTUATOR_PUMP(OFF);       \
-  ACTUATOR_SUCCTION(OFF);   \
-  ACTUATOR_VENTILATION(OFF);\
+    ACTUATOR_PUMP(OFF);       \
+    ACTUATOR_SUCCTION(OFF);   \
+    ACTUATOR_VENTILATION(OFF);\
+    toggleSucction=false;     \
   }
 
 
@@ -150,11 +158,12 @@
 
 //climb and descend cycles are implemented as a state machine.
 //here are the valid states
-#define CYCLE_CLIMB          0   //Start of machine
-#define CYCLE_HOLD_ALTITUDE  1
-#define CYCLE_DESCEND        2
-#define CYCLE_HOLD_GROUND    3
-#define CYCLE_END            4
+#define CYCLE_CLIMB_INITIAL  0   //Start of machine
+#define CYCLE_CLIMB_SLOW     1
+#define CYCLE_HOLD_ALTITUDE  2
+#define CYCLE_DESCEND        3
+#define CYCLE_HOLD_GROUND    4
+#define CYCLE_END            5
 
 
 //Output number with 5 digits right aligned to the screen.
@@ -216,7 +225,7 @@
   The program needs to know the pressure at GND-level. The current implementation
   assumes to be at ground at a specific pressure. In fact, we use a differential
   pressure sensor and if the sensor delivers a pressure of 0, we are on the ground
-  and we need to assume the pressure at ground for all calculations. This is why 
+  and we need to assume the pressure at ground for all calculations. This is why
   all calculated heights are relative to GND and not to MSL!
 */
 #define DEFAULT_GROUND_PRESSURE 1013 //Considered pressure for ground level (0 ft)
@@ -224,30 +233,29 @@
 /*
   The pressure sensor has jumping readings and needs to be damped somehow.
   This is done using a low pass filter which bypasses only low frequencies.
-  If you want to dampen the value more, adjust the value closer to 1. 
-  Alowed values are 0.1 to 0.9
+  If you want to dampen the value more, use a higher factor
 */
-#define PRESSURE_FILTERFACTOR   0.7
+#define PRESSURE_FILTERFACTOR   20
 
 
 /*
-  The controller tolerates pressures in a range with a specific width.
-  For example: If you want to have a pressure of 250 mBar, the controller
-  is happy if the current pressure is between (250 - TOLERANCE) and
-  (250 + TOLERANCE). If not, it will take actions to adjust the pressure.
+  The controller tolerates altitudes in a range with a specific width.
+  For example: If you want to have an altitude of 10000 ft, the controller
+  is happy if the current alltitude is between (10000 - TOLERANCE) and
+  (10000 + TOLERANCE). If not, it will take actions to adjust the pressure.
   Set the value for the tolerance window below. If the value is small,
   the controller will do a lot of corrections. Be careful with small
-  values! 
+  values!
 
-  Attention: This is mBar and NOT feet!!
- */
-#define ALTITUDE_PRESSURE_TOLERANCE 20  
+  Attention: This is in feet!!
+*/
+#define ALTITUDE_TOLERANCE 1000
 
 
 /*
-  Timings: 
+  Timings:
   The main program runs several tasks periodically.
-  you may adjust the timing intervals for each task 
+  you may adjust the timing intervals for each task
   seperately. At the moment, there are three tasks
   and for each of them you may adjust the timing interval in milliceconds.
 
@@ -255,13 +263,15 @@
     2. Check and process user inputs    --> SCREEN_PROCESS_INTERVAL
     3. Start a new pressure measurement --> MEASUREMENT_INTERVAL
     4. Write protocol data to serial out--> PROTOCOL_INTERVAL
+    5. Toggle an actuator periodically  --> TOGGLE_INTERVAL
 
   All numbers are interpreted in milliseconds.
- */
-#define SCREEN_PROCESS_INTERVAL   5 
-#define SCREEN_UPDATE_INTERVAL    5 
+*/
+#define SCREEN_PROCESS_INTERVAL   5
+#define SCREEN_UPDATE_INTERVAL    5
 #define MEASUREMENT_INTERVAL     20
-#define PROTOCOL_INTERVAL       200
+#define PROTOCOL_INTERVAL       1000
+#define TOGGLE_INTERVAL         500
 
 #define INPUT_LEN 5                  //Length of data input field
 
@@ -405,20 +415,24 @@ uint32_t currentCycle = 0;     //Counter for cycles
 
 
 //Variables for the cycling state machine
-uint8_t  cyclingState = CYCLE_CLIMB;
+uint8_t  cyclingState = CYCLE_CLIMB_INITIAL;
 uint32_t cycleMillies = 0;
 
 uint16_t currentPressure  = DEFAULT_GROUND_PRESSURE;//Current pressure value
-int      pressureDeduction=0;                       //First deduction of the pressure curve; positive in climb and negative in descend
-                                                    //in mBar/s
+int      pressureDeduction = 0;                     //First deduction of the pressure curve; positive in climb and negative in descend
+//in mBar/s
 volatile uint32_t millies = 0;                      //Used to count the timer interrupts
 uint8_t touchDebounce     = TS_DEBOUNCE_COUNTER;    //Suppress n following touch events after a successful ts reading
-bool eventHappened        =true;                    //Controls wheather a value update on the screen is required
-enum {altTolerable,altTooLow,altTooHigh};
+bool eventHappened        = true;                   //Controls wheather a value update on the screen is required
+enum {altTolerable, altTooLow, altTooHigh};
+bool toggleSucction = false;
+bool toggleVentilation = false;
 
-
-
-
+volatile bool fireMeasurement=false,
+              fireUpdateScreen=false,
+              fireProcessScreen=false,
+              fireToggling=false,
+              fireProtocol=false;
 /*=========================================================================================
 
                       F U N C T I O N S
@@ -451,37 +465,37 @@ uint16_t lowPass(uint16_t factor, uint16_t measure)
 
 void newMeasurement(void)
 {
-  uint16_t oldPressure=currentPressure;
+  uint16_t oldPressure = currentPressure;
   currentPressure = lowPass(PRESSURE_FILTERFACTOR, min(DEFAULT_GROUND_PRESSURE,
                             DEFAULT_GROUND_PRESSURE - (analogRead(PIN_PRESSURE) / 204.8 - 0.21) * 250));
-  pressureDeduction=(pressureDeduction*0.1+(oldPressure-currentPressure)*(1000/ MEASUREMENT_INTERVAL))/1.1;
+  pressureDeduction = (pressureDeduction * 0.1 + (oldPressure - currentPressure) * (1000 / MEASUREMENT_INTERVAL)) / 1.1;
   altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
-  altitudeHeightFT= CONVERT_METER2FEET(altitudeHeightM);
+  altitudeHeightFT = CONVERT_METER2FEET(altitudeHeightM);
 }
 
 /*
   ===============================================================================
   Function  : tolerance
-  Synopsis  : int tolerance(unit32_t measurement,unit32_t goal)
+  Synopsis  : int tolerance(uint32_t altitude, uint32_t goal)
   Discussion: Determine weather the current measurement is in the acceptable
             window
   Return    altTooLow    - Masurement is too high (altitude too low)
             altTolerable - Measurement is in tolerance window
             altTooHigh   - Measurement is too low (altitude too high)
 */
-int tolerance(unit32_t measurement, unit32_t goal)
+int tolerance(uint32_t altitude, uint32_t goal)
 {
-  unit32_t delta;
+  int32_t delta;
 
-  delta = measurement - goal; //delta positive means height not reached (too low)
+  delta = altitude - goal; //delta positive means we are too high
 
-  if  (abs(delta) <= ALTITUDE_PRESSURE_TOLERANCE)
+  if  (abs(delta) <= ALTITUDE_TOLERANCE)
     return altTolerable;//Pressure tolerable
 
-  if (measurement < goal - ALTITUDE_PRESSURE_TOLERANCE)
-    return altTooHigh; //Pressure too low
+  if (altitude < goal - ALTITUDE_TOLERANCE)
+    return altTooLow; //Altitude is too low
 
-  return altTooLow;   //Pressure too high
+  return altTooHigh;   //Altitude is too high
 }
 
 
@@ -505,7 +519,7 @@ void readTouchScreen(void)
     touchDebounce--;
     return;
   }
-  
+
   TSPoint p = ts.getPoint();
 
   pinMode(XM, OUTPUT);
@@ -515,7 +529,7 @@ void readTouchScreen(void)
     // scale from 0->1023 to tft.width
     touchYPos = (tft.height() - map(p.x, TS_MINX, TS_MAXX, tft.height(), 0));
     touchXPos = (tft.width() - map(p.y, TS_MAXY, TS_MINY, tft.width(), 0));
-    touchDebounce=TS_DEBOUNCE_COUNTER;
+    touchDebounce = TS_DEBOUNCE_COUNTER;
   }
 }
 
@@ -538,13 +552,13 @@ void updateMainScreen(void)
 
   if (!eventHappened)
     return;
-       
+
   BTN_Main[BTN_MAIN_START].drawButton(stateCycle);
   BTN_Main[BTN_MAIN_STOP].drawButton(!stateCycle);
   BTN_Main[BTN_MAIN_SUCCTION].drawButton(stateSucctionValve);
   BTN_Main[BTN_MAIN_VENTILATION].drawButton(stateVentilationValve);
   BTN_Main[BTN_MAIN_PUMP].drawButton(statePump);
-  eventHappened=false;
+  eventHappened = false;
 
 }
 
@@ -706,7 +720,7 @@ void processMainScreen(void)
   // go thru all the buttons, checking if they were pressed
   for (button = 0; button < 9 ; button++)
     if (BTN_Main[button].contains(touchXPos, touchYPos)) {
-      eventHappened=true;
+      eventHappened = true;
       break;
     }
 
@@ -732,38 +746,46 @@ void processMainScreen(void)
       break;
 
     case BTN_MAIN_START:
-      Serial.println("Millies;timeGround;timeFlight;maxAltitude;noCycles;currentCycle;stateCycle;stateSucctionValve;stateVentilationValve;statePump;currentPressure;pressureDeduction");
+      Serial.println("Millies;timeGround;timeFlight;maxAltitude;noCycles;currentCycle;stateCycle;stateSucctionValve;stateVentilationValve;statePump;currentPressure;altitudeHeightFT");
+      cyclingState=CYCLE_CLIMB_INITIAL;
       stateCycle = 1;
       break;
 
     case BTN_MAIN_STOP:
       stateCycle = 0;
+      HOLD_ALT;
       break;
 
     case BTN_MAIN_SUCCTION:
       if (!stateCycle) {
-        if (stateSucctionValve)
-	  ACTUATOR_SUCCTION(OFF);
-	else
-	  ACTUATOR_SUCCTION(ON);
+        if (stateSucctionValve) {
+          ACTUATOR_SUCCTION(OFF);
+        }
+        else {
+          ACTUATOR_SUCCTION(ON);
+        }
       }
       break;
 
     case BTN_MAIN_VENTILATION:
       if (!stateCycle) {
-        if(stateVentilationValve)
-	  ACTUATOR_VENTILATION(OFF);
-	else
-	  ACTUATOR_VENTILATION(ON);
+        if (stateVentilationValve) {
+          ACTUATOR_VENTILATION(OFF);
+        }
+        else {
+          ACTUATOR_VENTILATION(ON);
+        }
       }
       break;
 
     case BTN_MAIN_PUMP:
       if (!stateCycle) {
-	if (statePump)
-	  ACTUATOR_PUMP(OFF);
-	else 
-	  ACTUATOR_PUMP(ON);
+        if (statePump) {
+          ACTUATOR_PUMP(OFF);
+        }
+        else {
+          ACTUATOR_PUMP(ON);
+        }
       }
       break;
   }
@@ -786,7 +808,7 @@ void processEditScreen(void)
   // go thru all the buttons, checking if they were pressed
   for (button = 0; button < 15; button++) {
     if (BTN_Edit[button].contains(touchXPos, touchYPos)) {
-      eventHappened=true;
+      eventHappened = true;
       break;
     }
   }
@@ -845,38 +867,55 @@ void processEditScreen(void)
 void processCycles(void)
 {
 
-  unit32_t pressureDest=DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0);
+  uint32_t pressureDest = DEFAULT_GROUND_PRESSURE - (maxAltitude / 27.0);
   int      weAre;
-    
+
+  weAre = tolerance(altitudeHeightFT, maxAltitude);
+
   switch (cyclingState) {
-    case CYCLE_CLIMB:
-      weAre=tolerance(currentPressure, pressureDest);
+    case CYCLE_CLIMB_INITIAL:
+/*
+      //Climb fast until half of the desired height is reached
+      if (altitudeHeightFT <= maxAltitude/2) {
+        CLIMB_FAST;
+      }
+*/    
+      if (weAre != altTooHigh) {
+        CLIMB_FAST;
+      }
+      else
+        cyclingState+=2; //advance state if half of desired altitude is reached 
 
-      //Climb if we are below the destination altitude
-      if (weAre == altTooLow)
-	CLIMB_FAST;
+      cycleMillies=millies;
+      break;
 
+    case CYCLE_CLIMB_SLOW:
+      //Climb slow until the desired height is reached
+      if (weAre == altTooLow) {
+        CLIMB_SLOW;
+      }
       //advance state if desired altitude is reached
-      else if (weAre == altTolerable)
+      else
         cyclingState++;
 
       cycleMillies = millies;
       break;
 
     case CYCLE_HOLD_ALTITUDE:
-      weAre=tolerance(currentPressure, pressureDest);
-
       //If weAre tooHigh, open one valve for a smooth descend
-      if (weAre == altTooHigh)
-	DESCEND_SLOW;
-      
+      if (weAre == altTooHigh) {
+        DESCEND_SLOW;
+      }
+
       //climb if necessary
-      if (weAre == altTooLow)
-	CLIMB_FAST;
+      if (weAre == altTooLow) {
+        CLIMB_FAST;
+      }
 
       //Hold altitude if we are OK
-      if (weAre == altTolerable)
-	HOLD_ALT;
+      if (weAre == altTolerable) {
+        HOLD_ALT;
+      }
 
       //Check if flight time is reached
       if (millies >= cycleMillies + 1000 * timeFlight)
@@ -885,11 +924,8 @@ void processCycles(void)
       break;
 
     case CYCLE_DESCEND:
-      weAre=tolerance(currentPressure, DEFAULT_GROUND_PRESSURE);
-
-      //Descend if we are above the destination altitude
-      if (weAre == altTooHigh)
-	DESCEND_FAST;
+      weAre = tolerance(altitudeHeightFT, 0);
+      DESCEND_FAST;
 
       //advance state if ground is reached
       if (weAre == altTolerable)
@@ -908,17 +944,17 @@ void processCycles(void)
     case CYCLE_END:
       currentCycle++;
       if (currentCycle >= noCycles) {
-	currentCycle=0;
+        currentCycle = 0;
         stateCycle = 0; //End cycling
-	HOLD_ALT;
+        HOLD_ALT;
       }
 
-      cyclingState = CYCLE_CLIMB;
+      cyclingState = CYCLE_CLIMB_INITIAL;
       break;
 
     default:
       //Error handling
-      cyclingState = CYCLE_CLIMB;
+      cyclingState = CYCLE_CLIMB_INITIAL;
       stateCycle = 0;
       break;
 
@@ -970,6 +1006,21 @@ void setup(void) {
 ISR(TIMER0_COMPA_vect) {   //This is the interrupt service routine for timer0
   //Advance the counter for milliseconds
   millies++;
+
+  if (!(millies % MEASUREMENT_INTERVAL))
+    fireMeasurement=true;
+    
+  if (!(millies % SCREEN_UPDATE_INTERVAL))
+    fireUpdateScreen=true;
+
+  if (!(millies % SCREEN_PROCESS_INTERVAL))
+    fireProcessScreen=true;
+
+  if (!(millies % TOGGLE_INTERVAL))
+    fireToggling=true;
+
+  if (!(millies % PROTOCOL_INTERVAL))
+    fireProtocol=true;
 }
 
 /*=========================================================================================
@@ -981,36 +1032,51 @@ void loop()
 {
 
   //Pressure measurement every MEASUREMENT_INTERVAL ms
-  if (!(millies % MEASUREMENT_INTERVAL))
+  if (fireMeasurement) {
     newMeasurement(); //It's time for a new measurement
-
-  if (!(millies % SCREEN_UPDATE_INTERVAL))
-    {
-      updateScreen();  //It's time to update screen values
-    }
-    
-  if (!(millies % SCREEN_PROCESS_INTERVAL))
-    processScreen(); //Time for user input processing
-
-  if (!(millies % PROTOCOL_INTERVAL) && stateCycle) {
-    char serialBuffer[128];
-    sprintf(serialBuffer,"%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d",
-	    Millies,
-	    timeGround,
-	    timeFlight,
-	    maxAltitude,
-	    noCycles,
-	    currentCycle,
-	    stateCycle,
-	    stateSucctionValve,
-	    stateVentilationValve,
-	    statePump,
-	    currentPressure,
-	    pressureDeduction);
-    Serial.println(serialBuffer);
-
+    fireMeasurement=false;
   }
-    
+  
+  if (fireUpdateScreen) {
+    updateScreen();  //It's time to update screen values
+    fireUpdateScreen=false;
+  }
+
+  if (fireProcessScreen) {
+    processScreen(); //Time for user input processing
+    fireProcessScreen=false;
+  }
+
+  if (fireToggling) {
+    if (toggleSucction) {
+      TOGGLE_ACTUATOR(ACTUATOR_SUCCTION, stateSucctionValve);
+    }
+    if (toggleVentilation) {
+      TOGGLE_ACTUATOR(ACTUATOR_VENTILATION, stateVentilationValve);
+    }
+    fireToggling=false;
+  }
+
+
+  if (fireProtocol && stateCycle) {
+    char serialBuffer[128];
+
+    Serial.print(millies);               Serial.print(";");
+    Serial.print(timeGround);            Serial.print(";");
+    Serial.print(timeFlight);            Serial.print(";");
+    Serial.print(maxAltitude);           Serial.print(";");
+    Serial.print(noCycles);              Serial.print(";");
+    Serial.print(currentCycle);          Serial.print(";");
+    Serial.print(stateCycle);            Serial.print(";");
+    Serial.print(stateSucctionValve);    Serial.print(";");
+    Serial.print(stateVentilationValve); Serial.print(";");
+    Serial.print(statePump);             Serial.print(";");
+    Serial.print(currentPressure);       Serial.print(";");
+    Serial.println(altitudeHeightFT);
+
+    fireProtocol=false;
+  }
+
 
   if (stateCycle)
     processCycles();
