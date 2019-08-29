@@ -21,6 +21,6 @@
   * Kompilieren des Codes mit Strg-R. 
   * Hochladen des Codes auf den Controller mit Strg-U
 
-#Autoren
+# Autoren
   * Thorsten Klinkhammer
   * Markus Kuhnla
