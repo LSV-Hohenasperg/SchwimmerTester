@@ -5,8 +5,16 @@
    Description: schwimmertester is a Arduino-Nano-Sketch, to control a vakuum pump,
                 two valves and to read a pressure sensor. The board is equipped with
                 a Touch-LCD screen.
+		The program simulates a climb to a specified altitude, holds the
+                altitude for some time, descends to the ground and holds ground
+                pressure for another time. This simulation is repeated N times.
+
+		While the simulation runs, a log in csv format is written to
+                the serial port (9600 Baud).
+
    Author(s)  : Thorsten Klinkhammer (klinkhammer@gmail.com)
                 Markus Kuhnla (markus@kuhnla.de)
+
    Date       : August, 24th 2019
 
 
@@ -143,7 +151,7 @@
 #define TS_MAXY        905
 #define TS_MINPRESSURE 10    //Minimum pressure for recognizing a touch event
 #define TS_MAXPRESSURE 1000  //Maximum pressure for recognizing a touch event
-#define TS_DEBOUNCE_COUNTER 2//Suppress 2 readings after a successful ts reading
+#define TS_DEBOUNCE_COUNTER 2//Suppress 2 readings after a successful ts reading (Debounce)
 
 //Index for the buttons on main screen
 #define BTN_MAIN_GNDTIME     0
@@ -183,7 +191,10 @@
     s.print(numBuf);				    \
   }
 
-#define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) * (1-pow((float) pressure / 1013,(1/5.255))))
+//Formula to convert the readings from the pressure sensor to ft and meter
+#define CONVERT_PRESS2METER(pressure) ((288.15/0.0065) *                                 \
+				       (1-pow((float) pressure / DEFAULT_GROUND_PRESSURE,\
+					      (1/5.255))))
 #define CONVERT_METER2FEET(meters) (meters * 3.28084)
 
 
@@ -234,6 +245,9 @@
   The pressure sensor has jumping readings and needs to be damped somehow.
   This is done using a low pass filter which bypasses only low frequencies.
   If you want to dampen the value more, use a higher factor
+
+  The value has been found by experimenting with different settings.
+  Be careful if you change this!! 
 */
 #define PRESSURE_FILTERFACTOR   20
 
@@ -244,20 +258,20 @@
   is happy if the current alltitude is between (10000 - TOLERANCE) and
   (10000 + TOLERANCE). If not, it will take actions to adjust the pressure.
   Set the value for the tolerance window below. If the value is small,
-  the controller will do a lot of corrections. Be careful with small
-  values!
+  the controller will do a lot of corrections. 
+  Be careful with small values!
 
-  Attention: This is in feet!!
 */
-#define ALTITUDE_TOLERANCE 1000
+#define ALTITUDE_TOLERANCE 1000  //Tolerance in feet
 
 
 /*
   Timings:
   The main program runs several tasks periodically.
   you may adjust the timing intervals for each task
-  seperately. At the moment, there are three tasks
-  and for each of them you may adjust the timing interval in milliceconds.
+  seperately. At the moment, there are five tasks
+  and for each of them you may adjust the timing 
+  interval in milliceconds.
 
     1. Update all values on the screen  --> SCREEN_UPDATE_INTERVAL
     2. Check and process user inputs    --> SCREEN_PROCESS_INTERVAL
@@ -377,31 +391,39 @@ void processEditScreen(void);
   +++++++++++++++++++++++++++++
 */
 
-MCUFRIEND_kbv tft;
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+MCUFRIEND_kbv       tft;
+TouchScreen         ts = TouchScreen(XP, YP, XM, YM, 300);
 Adafruit_GFX_Button BTN_Main[9];
 Adafruit_GFX_Button BTN_Edit[15];
 
 
-
+//Variables for the editScreen (NumberPad)
 char     *editScreenHeadline;      //Pointer to the headline for the editScreen. One of HEADLINE_xxx
-uint32_t editScreenInput   = 0;
+uint32_t editScreenInput   = 0;    //Contains the actual input value at the edit screen.
 
 //Three handy pointers to the screen management functions to be in use.
+//They are updated using SWITCH_TO_MAINSCREEN and SWITCH_TO_EDITSCREEN.
 void    (*updateScreen)()  = updateMainScreen;
 void    (*drawScreen)()    = drawMainScreen;
 void    (*processScreen)() = processMainScreen;
 
+//State variables show the current state of actuators or functions
 uint8_t  stateCycle = 0;          //Shows wheather we are doing cycles
 uint8_t  stateSucctionValve = 0;  //Shows the current state of the sucction valve
 uint8_t  stateVentilationValve = 0; //Shows the current state of the ventilation valve
 uint8_t  statePump = 0;           //Shows the current state of the pump relais
+bool     toggleSucction    = false; //Make the sucction valve toggle
+bool     toggleVentilation = false; //Make the ventilation valve toggle
 
-volatile int32_t touchXPos;       //X-coordinate of touch screen
-volatile int32_t touchYPos;       //Y-coordinate of touch screen
+//Variables for the touched position at the touch screen
+int32_t touchXPos;       //X-coordinate of touch screen
+int32_t touchYPos;       //Y-coordinate of touch screen
+uint8_t touchDebounce= TS_DEBOUNCE_COUNTER; // see above
 
-//Calculated variables
-int32_t flightHeight     = 0;
+//Current pressure value in mBar. Cooked and filtered.
+uint16_t currentPressure  = DEFAULT_GROUND_PRESSURE;
+
+//Calculated variables from currentPressure
 int32_t altitudeHeightM  = 0;
 int32_t altitudeHeightFT = 0;
 
@@ -410,24 +432,31 @@ uint32_t timeGround  = DEFAULT_TIME_GROUND;
 uint32_t timeFlight  = DEFAULT_TIME_FLIGHT;
 uint32_t maxAltitude = DEFAULT_SIM_ALTITUDE;
 uint32_t noCycles    = DEFAULT_NO_CYCLES;
+//Pointer to the variable which should changed using the edit screen
+//  Should point to one of the four above.
 uint32_t *editPtr;             //Pointer to one editable variable
-uint32_t currentCycle = 0;     //Counter for cycles
-
 
 //Variables for the cycling state machine
-uint8_t  cyclingState = CYCLE_CLIMB_INITIAL;
-uint32_t cycleMillies = 0;
+uint8_t  cyclingState = CYCLE_CLIMB_INITIAL; //Current state of the state machine for cycles 
+uint32_t cycleMillies = 0;                   //Timestamp when the state machine entered the current state
+uint32_t currentCycle = 0;                   //Counter for cycles
 
-uint16_t currentPressure  = DEFAULT_GROUND_PRESSURE;//Current pressure value
-int      pressureDeduction = 0;                     //First deduction of the pressure curve; positive in climb and negative in descend
-//in mBar/s
-volatile uint32_t millies = 0;                      //Used to count the timer interrupts
-uint8_t touchDebounce     = TS_DEBOUNCE_COUNTER;    //Suppress n following touch events after a successful ts reading
-bool eventHappened        = true;                   //Controls wheather a value update on the screen is required
-enum {altTolerable, altTooLow, altTooHigh};
-bool toggleSucction = false;
-bool toggleVentilation = false;
+//A global counter variable for milliseconds since program start
+// Attention: This is manipulated in an interrupt service routine
+//            and needs to be volatile!
+volatile uint32_t millies = 0;
 
+//The display is very slow and should only be updated, if something has changed.
+//The following variable controls, if the screen neds an update.
+bool eventHappened        = true;
+
+enum {altTolerable, altTooLow, altTooHigh}; //All possible altitude situations.
+
+//Due to the lack of an event queue, we set for every possible
+//task of the mainloop one variable to true. This fires the
+//appropriate processing (OneShot). Since these variables are
+//manipulated in an interupt service routine, they need to
+//be volatile!
 volatile bool fireMeasurement=false,
               fireUpdateScreen=false,
               fireProcessScreen=false,
@@ -444,9 +473,10 @@ volatile bool fireMeasurement=false,
   Function  : lowPass
   Synopsis  : uint16_t lowPass(uint16_t factor, uint16_t measure)
   Discussion: Filters measurements using a low pass filter. The smoothing
-            factor is adjustable between 0 and 1. I.e: if you set the factor
-            to 0.1, the old median will be used with 10% and the new reading
-            has a weight of 90% (very low smoothing).
+            factor is adjustable between 0 and 100.
+	    I.e: A value of 0 means, no low pass filtering is done.
+            A value of 10 means, that the weight of the old value to the
+            new measurement is 10:1.
   Return    : New filtered measurement value (float)
 */
 uint16_t lowPass(uint16_t factor, uint16_t measure)
@@ -468,7 +498,6 @@ void newMeasurement(void)
   uint16_t oldPressure = currentPressure;
   currentPressure = lowPass(PRESSURE_FILTERFACTOR, min(DEFAULT_GROUND_PRESSURE,
                             DEFAULT_GROUND_PRESSURE - (analogRead(PIN_PRESSURE) / 204.8 - 0.21) * 250));
-  pressureDeduction = (pressureDeduction * 0.1 + (oldPressure - currentPressure) * (1000 / MEASUREMENT_INTERVAL)) / 1.1;
   altitudeHeightM = CONVERT_PRESS2METER(currentPressure);
   altitudeHeightFT = CONVERT_METER2FEET(altitudeHeightM);
 }
@@ -884,7 +913,7 @@ void processCycles(void)
         CLIMB_FAST;
       }
       else
-        cyclingState+=2; //advance state if half of desired altitude is reached 
+        cyclingState+=2; //HACK: Skip CYCLE_CLIMB_SLOW
 
       cycleMillies=millies;
       break;
@@ -986,11 +1015,11 @@ void setup(void) {
   ACTUATOR_PUMP(OFF);
 
   //Now setup timer0 to generate an interrupt every 1 ms
-  TCCR0B |= (1 << CS01); //Set the prescaler to 8
-  TCCR0A = (1 << WGM01); //Set timer mode to Clear Timer on Compare Match (CTC)
-  OCR0A = 0x7C;         //The Formula for OCR is: OCR=16MHz/Prescaler*desiredSeconds -1
+  TCCR0B |= (1 << CS01);   //Set the prescaler to 8
+  TCCR0A =  (1 << WGM01);  //Set timer mode to Clear Timer on Compare Match (CTC)
+  OCR0A  =  0x7C;          //The formula for OCR is: OCR=16MHz/Prescaler*desiredSeconds -1
   TIMSK0 |= (1 << OCIE0A); //Set the interrupt request
-  sei();                //Enable interrupt
+  sei();                   //Enable interrupt
 
   //Always start with the main screen
   SWITCH_TO_MAINSCREEN;
@@ -1002,25 +1031,18 @@ void setup(void) {
 
   ==========================================================================================*/
 
-
-ISR(TIMER0_COMPA_vect) {   //This is the interrupt service routine for timer0
+//This is the interrupt service routine for timer0
+ISR(TIMER0_COMPA_vect)
+{   
   //Advance the counter for milliseconds
   millies++;
 
-  if (!(millies % MEASUREMENT_INTERVAL))
-    fireMeasurement=true;
-    
-  if (!(millies % SCREEN_UPDATE_INTERVAL))
-    fireUpdateScreen=true;
-
-  if (!(millies % SCREEN_PROCESS_INTERVAL))
-    fireProcessScreen=true;
-
-  if (!(millies % TOGGLE_INTERVAL))
-    fireToggling=true;
-
-  if (!(millies % PROTOCOL_INTERVAL))
-    fireProtocol=true;
+  //Set fire events, if their timing has come
+  fireMeasurement  = !(millies % MEASUREMENT_INTERVAL)    || fireMeasurement;
+  fireUpdateScreen = !(millies % SCREEN_UPDATE_INTERVAL)  || fireUpdateScreen;
+  fireProcessScreen= !(millies % SCREEN_PROCESS_INTERVAL) || fireProcessScreen;
+  fireToggling     = !(millies % TOGGLE_INTERVAL)         || fireToggling;
+  fireProtocol     = !(millies % PROTOCOL_INTERVAL)       || fireProtocol;
 }
 
 /*=========================================================================================
@@ -1031,22 +1053,25 @@ ISR(TIMER0_COMPA_vect) {   //This is the interrupt service routine for timer0
 void loop()
 {
 
-  //Pressure measurement every MEASUREMENT_INTERVAL ms
+  //Should we do a new pressure measurement?
   if (fireMeasurement) {
-    newMeasurement(); //It's time for a new measurement
+    newMeasurement(); 
     fireMeasurement=false;
   }
-  
+
+  //Should we do an update at the screen?
   if (fireUpdateScreen) {
-    updateScreen();  //It's time to update screen values
+    updateScreen(); 
     fireUpdateScreen=false;
   }
 
+  //Should we check for user inputs?
   if (fireProcessScreen) {
-    processScreen(); //Time for user input processing
+    processScreen();
     fireProcessScreen=false;
   }
 
+  //Should we toggle actuators?
   if (fireToggling) {
     if (toggleSucction) {
       TOGGLE_ACTUATOR(ACTUATOR_SUCCTION, stateSucctionValve);
@@ -1057,7 +1082,11 @@ void loop()
     fireToggling=false;
   }
 
+  //Is cycling active? (Start button pressed)
+  if (stateCycle)
+    processCycles();
 
+  //Should we write a new line to the serial port?
   if (fireProtocol && stateCycle) {
     char serialBuffer[128];
 
@@ -1077,8 +1106,4 @@ void loop()
     fireProtocol=false;
   }
 
-
-  if (stateCycle)
-    processCycles();
-
-}
+} /* END OF LIFE */
